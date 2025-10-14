@@ -4,7 +4,7 @@ Python GUI to run capemon in standalone VM. Provides a subset of CAPE (Configura
   * Use the CAPEv2 guest guide for configuration details.
   * https://capev2.readthedocs.io/en/latest/installation/guest/index.html
 * Install Python in VM, tested on 64-bit Python versions 3.11 and 3.12, and add Python to path.
-* Download and install Microsoft Visual C++ Redistributable.
+* Download and install both Microsoft Visual C++ Redistributables:
   * https://aka.ms/vs/17/release/vc_redist.x86.exe
   * https://aka.ms/vs/17/release/vc_redist.x64.exe
 * Install CAPEsolo.
