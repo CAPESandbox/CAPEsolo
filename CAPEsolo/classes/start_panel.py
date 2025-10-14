@@ -859,7 +859,9 @@ class StartPanel(wx.Panel):
 
     def OnUpdateYara(self, event):
         confirm = wx.MessageBox(
-            "Download and overwrite any existing YARA rules. This could take a few minutes.\n\nDo you want to continue?",
+            "Download and overwrite any existing YARA rules. "
+            "This could take a few minutes.\n\n"
+            "Do you want to continue?",
             "Confirm YARA Update",
             wx.YES_NO | wx.ICON_QUESTION | wx.CENTER,
         )
