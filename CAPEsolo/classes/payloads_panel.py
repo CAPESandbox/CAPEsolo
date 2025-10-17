@@ -90,7 +90,8 @@ class PayloadsPanel(wx.Panel):
                 grid = CopyableGrid(self.panel, 0, 2)
                 grid.SetColLabelSize(0)
                 grid.SetRowLabelSize(0)
-                self.AddNewRow(grid, "Path", filepath)
+                self.AddNewRow(grid, "Payload Path", filepath)
+                self.AddNewRow(grid, "Original Path", data.get(key, {}).get("filepath", ""))
 
                 if "cape_type" in cape_info:
                     if cape_info.get("cape_type", ""):

@@ -379,7 +379,7 @@ class StartPanel(wx.Panel):
             ("dump-on-api", ""),
             ("coverage-modules", ""),
             ("dump-on-api-type", ""),
-            ("break-on-api", ""),
+            ("break-on-apiname", ""),
             ("break-on-mod", ""),
             (
                 "typestring, typestring0, typestring1, typestring2, typestring3",
