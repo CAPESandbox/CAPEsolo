@@ -1483,19 +1483,10 @@ class CommandPipeHandler:
         """Request for injection into a process."""
         # Parse the process identifier.
         # PROCESS:1:1824,2856
-        suspended = False
-        process_id = thread_id = None
         # We parse the process ID.
-        suspended, data = data.split(b":")
-        if b"," not in data:
-            if data.isdigit():
-                process_id = int(data)
-        elif data.count(b",") == 1:
-            process_id, param = data.split(b",")
-            thread_id = None
-            process_id = int(process_id) if process_id.isdigit() else None
-            if param.isdigit():
-                thread_id = int(param)
+        pid_s, tid_s = data.split(b",", 1)
+        process_id = int(pid_s)
+        thread_id  = int(tid_s)
         if process_id and not ANALYSIS_TIMED_OUT:
             if process_id not in (self.analyzer.pid, self.analyzer.ppid):
                 # We inject the process only if it's not being
@@ -1510,7 +1501,6 @@ class CommandPipeHandler:
                         config=self.analyzer.config,
                         pid=process_id,
                         thread_id=thread_id,
-                        suspended=suspended,
                     )
                     filepath = proc.get_filepath()  # .encode('utf8', 'replace')
                     # if it's a URL analysis, provide the URL to all processes as

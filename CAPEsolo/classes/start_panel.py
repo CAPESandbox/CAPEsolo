@@ -236,38 +236,38 @@ class StartPanel(wx.Panel):
         hboxBreakRet.Add(breakRetLabel, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
         hboxBreakRet.Add(self.apiList, flag=wx.ALIGN_CENTER_VERTICAL)
 
+        self.baseAllocCheckbox = wx.CheckBox(self.debuggerPane, label="base-on-alloc")
+
         hboxCount = wx.BoxSizer(wx.HORIZONTAL)
-        countLabel = wx.StaticText(self.debuggerPane, label="Count:")
+        countLabel = wx.StaticText(self.debuggerPane, label="count:")
         self.debugCount = wx.TextCtrl(self.debuggerPane, size=wx.Size(75, -1))
-        hboxCount.Add(countLabel, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hboxCount.Add(self.debugCount, flag=wx.ALIGN_CENTER_VERTICAL)
+        hboxCount.Add(countLabel, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=8)
+        hboxCount.Add(self.debugCount, proportion=0, flag=wx.EXPAND)
 
         hboxDepth = wx.BoxSizer(wx.HORIZONTAL)
-        depthLabel = wx.StaticText(self.debuggerPane, label="Depth:")
-        self.debugDepth = wx.TextCtrl(self.debuggerPane, size=wx.Size(50, -1))
-        hboxDepth.Add(depthLabel, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
-        hboxDepth.Add(self.debugDepth, flag=wx.ALIGN_CENTER_VERTICAL)
+        depthLabel = wx.StaticText(self.debuggerPane, label="depth:")
+        self.debugDepth = wx.TextCtrl(self.debuggerPane, size=wx.Size(26, -1))
+        hboxDepth.Add(depthLabel, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=2)
+        hboxDepth.Add(self.debugDepth, proportion=0, flag=wx.EXPAND)
+
+        hCountDepth = wx.BoxSizer(wx.HORIZONTAL)
+        hCountDepth.Add(hboxCount, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT)
+        hCountDepth.AddSpacer(10)
+        hCountDepth.Add(hboxDepth, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT)
 
         self.idbgCheckbox = wx.CheckBox(self.debuggerPane, label="Interactive Debugger")
         self.idbgCheckbox.Bind(wx.EVT_CHECKBOX, self.OnIdbgChecked)
 
         self.yarascanDisable = wx.CheckBox(self.debuggerPane, label="Disable Monitor Yarascan")
 
-        self.flexDebuggerSizer.Add(
-            hboxBaseApi,
-            proportion=0,
-            flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT,
-            border=5,
-        )
-        self.flexDebuggerSizer.Add(
-            hboxBreakRet,
-            proportion=0,
-            flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT,
-            border=5,
-        )
+        self.flexDebuggerSizer.AddSpacer(1)
+        self.flexDebuggerSizer.AddSpacer(1)
+        self.flexDebuggerSizer.AddSpacer(1)
+        self.flexDebuggerSizer.Add(hboxBaseApi, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.flexDebuggerSizer.Add(hboxBreakRet, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.flexDebuggerSizer.Add(hCountDepth, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        self.flexDebuggerSizer.Add(self.baseAllocCheckbox, proportion=0, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
         self.flexDebuggerSizer.Add(self.yarascanDisable, proportion=0, flag=wx.EXPAND)
-        self.flexDebuggerSizer.Add(hboxCount, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
-        self.flexDebuggerSizer.Add(hboxDepth, proportion=0, flag=wx.EXPAND)
         self.flexDebuggerSizer.Add(self.idbgCheckbox, proportion=0, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
 
         debuggerVert = wx.BoxSizer(wx.VERTICAL)
@@ -745,6 +745,8 @@ class StartPanel(wx.Panel):
             opts.append(f"base-on-api={self.baseApi.GetValue()}")
         if self.apiList.GetValue():
             opts.append(f"break-on-return={self.apiList.GetValue()}")
+        if self.baseAllocCheckbox.GetValue():
+            opts.append("base-on-alloc=1")
 
         return ",".join(opts)
 
