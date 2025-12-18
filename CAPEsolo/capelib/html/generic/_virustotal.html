@@ -1,0 +1,70 @@
+{% if file.virustotal and not file.virustotal.error == True %}
+<div class="card-header">
+    <div class="d-flex justify-content-center"><a class="btn btn-link" data-bs-toggle="collapse" aria-expanded="false" href="#virustotal_binary"><i class="fas fa-shield-virus"></i> VirusTotal ({{file.virustotal.positives}}/{{file.virustotal.total}}) {% if file.virustotal.detection %} - {{file.virustotal.detection}} {% endif %}</a></div>
+</div>
+
+<div class="collapse" id="virustotal_binary">
+    <div class="card card-body">
+        {% if file.virustotal.resource %}
+            <h4><a href="https://www.virustotal.com/en/file/{{file.virustotal.resource}}/analysis/">Full Results</a></h4>
+        {% endif %}
+
+        <table class="table table-striped table-bordered">
+            <tr>
+                <th>Engine</th><th>Result</th><th>Engine</th><th>Result</th><th>Engine</th><th>Result</th>
+            </tr>
+
+            {% for av, values in file.virustotal.scans.items() %}
+                <td>{{av}}</td>
+                <td>
+                    {% if not values.result %}
+                        <span class="text-muted">Clean</span>
+                    {% else %}
+                        <span class="text-danger">{{values.result}}
+                        {% if values.moloch %}
+                        <a href="{{values.moloch}}" target="_blank">[MLCH]</a>
+                        {% endif %}
+                        </span>
+                    {% endif %}
+                </td>
+            {% if loop.index %3 == 0 %}
+                </tr>
+            {% elif loop.last %}
+                </tr>
+            {% endif %}
+            {% endfor %}
+
+        </table>
+        {% if file.virustotal.first_seen %}
+        <table class="table table-striped table-bordered">
+            <tr>
+                <th style="border-top: 0; width: 15%;">First Seen</th>
+                <td style="border-top: 0; word-wrap: break-word;">{{file.virustotal.first_seen}}</td>
+            </tr>
+            <tr>
+                <th style="border-top: 0; width: 15%;">Last Seen</th>
+                <td style="border-top: 0; word-wrap: break-word;">{{file.virustotal.last_seen}}</td>
+            </tr>
+            <tr>
+                <th style="border-top: 0; width: 15%;">Unique Sources</th>
+                <td style="border-top: 0; word-wrap: break-word;">{{file.virustotal.unique_sources}}</td>
+            </tr>
+            <tr>
+                <th>Submission Names</th>
+                <td>
+                {% if file.virustotal.names %}
+                    <ul style="margin-bottom: 0;">
+                    {% for name in file.virustotal.names %}
+                        <li>{{name}}</li>
+                    {% endfor %}
+                    </ul>
+                {% else %}
+                    Not Available
+                {% endif %}
+                </td>
+            </tr>
+        </table>
+    {% endif %}
+    </div>
+</div>
+{% endif %}

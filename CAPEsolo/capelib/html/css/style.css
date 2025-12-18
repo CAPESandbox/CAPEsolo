@@ -1,0 +1,446 @@
+body {
+    font-family: "Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-size: 14px;
+    padding-top: 20px;
+    background: #1c1c1c;
+    color: #fff;
+}
+@media print {
+    html {
+        -webkit-print-color-adjust: exact;
+    }
+    .table{
+        color: #000!important;
+    }
+}
+
+@page {
+    size: A3;
+    margin: 1cm;
+}
+
+@media (max-width: 979px) {
+    body {
+        padding-top: 0px;
+        padding-bottom: 0px;
+    }
+}
+
+.nav-link {
+    color: white;
+}
+
+.nav-link:hover {
+    color: #EE1B2F;
+}
+
+.btn-link {
+    color: red
+}
+
+.btn-link:hover {
+    color: #EE1B2F
+}
+
+.page-link {
+    background-color: #444
+}
+
+.page-item.active .page-link {
+    z-index:3;
+    color:#fff;
+    background-color:#ee1b2f;
+    border-color:transparent
+}
+
+footer {
+    background: #292727;
+    margin: 40px 0 0;
+    padding: 20px 0 15px;
+    width: 100%;
+    color: #ccc;
+}
+footer a:link, footer a:visited {
+    color: #ccc;
+    text-decoration: none;
+}
+footer a:hover {
+    color: #ccc;
+    text-decoration: underline;
+}
+#footer-extra {
+    background: #1c1c1c;
+    padding: 10px 0;
+    font-size: 11px;
+    color: #999;
+}
+#footer-extra a:link, #footer-extra a:visited {
+    color: #999;
+    font-weight: bold;
+    text-decoration: none;
+}
+#footer-extra a:hover {
+    color: #ccc;
+    text-decoration: underline;
+}
+.center {
+    text-align: center;
+}
+.mono {
+    font-family: monospace;
+    font-size: medium;
+}
+.section-title {
+    border-bottom: 1px solid #eee;
+    margin-bottom: 15px;
+    margin-top: 20px;
+    padding-bottom: 3px;
+}
+span.block-title {
+    font-size: 18px;
+    font-weight: bold;
+}
+img.opaque {
+    opacity: 0.3;
+    filter: alpha(opacity=30);
+}
+img.opaque:hover {
+    opacity: 1.0;
+    filter: alpha(opacity=100);
+}
+.gray {
+    color: #666;
+}
+.table-centered {
+    margin: 0 auto !important;
+    float: none !important;
+}
+a.tag-label {
+    color: white;
+}
+
+h4, .h4 {
+    font-size: 18px;
+}
+
+.filesystem {
+    background-color: #ffe3c5;
+    color: black;
+}
+.registry {
+    background-color: #ffc5c5;
+    color: black;
+}
+.process {
+    background-color: #c5e0ff;
+    color: black;
+}
+.threading {
+    background-color: #d3e0ff;
+    color: black;
+}
+.services {
+    background-color: #ccc5ff;
+    color: black;
+}
+.device {
+    background-color: #d3c5cc;
+    color: black;
+}
+.network {
+    background-color: #d3ffc5;
+    color: black;
+}
+.socket {
+    background-color: #d3ffc5;
+    color: black;
+}
+.synchronization {
+    background-color: #f9c5ff;
+    color: black;
+}
+.browser {
+    background-color: #dfffdf;
+    color: black;
+}
+.crypto {
+    background-color: #f0f2c5;
+    color: black;
+}
+.system {
+    background-color: #fffcc5;
+    color: black;
+}
+.windows {
+    background-color: #ffc5ee;
+    color: black;
+}
+
+.filter-box {
+    display : none;
+    padding-top: 15px;
+	height : auto;
+	width : 40%;
+}
+
+td {
+    word-wrap: break-word;
+}
+
+.tab-content {
+    margin-top: 25px;
+}
+
+.row-active {
+    background-color:darkred;
+}
+
+pre {
+    white-space: -moz-pre-wrap;
+    white-space: -pre-wrap;
+    white-space: -o-pre-wrap;
+    word-wrap: break-word;
+    color: #fff !important;
+}
+
+.tcp-flow {
+    list-style-type: none;
+}
+.tcp-flow li {
+    margin-bottom: 20px;
+}
+.tcp-out {
+}
+.tcp-out pre {
+    padding: 0;
+    border: 0;
+    color: #d9534f;
+}
+.tcp-in {
+    padding-left: 100px;
+}
+.tcp-in pre {
+    padding: 0;
+    border: 0;
+    color: #5bc0de;
+}
+#filter-toggle {
+    display: inline-block;
+    cursor: pointer;
+}
+
+/* =========================
+   API call category coloring
+   ========================= */
+
+/* Make sure our row styles win over Bootstrap */
+.calltable table.table tbody tr.system {
+    background-color: #1f2933 !important;
+    border-left: 4px solid #7f8c8d !important;
+}
+
+.calltable table.table tbody tr.registry {
+    background-color: #2b1d3a !important;
+    border-left: 4px solid #9b59b6 !important;
+}
+
+.calltable table.table tbody tr.filesystem {
+    background-color: #1e3a2f !important;
+    border-left: 4px solid #2ecc71 !important;
+}
+
+.calltable table.table tbody tr.network {
+    background-color: #1d2f3a !important;
+    border-left: 4px solid #3498db !important;
+}
+
+.calltable table.table tbody tr.process {
+    background-color: #3a1d1d !important;
+    border-left: 4px solid #e74c3c !important;
+}
+
+.calltable table.table tbody tr.threading {
+    background-color: #3a331d !important;
+    border-left: 4px solid #f1c40f !important;
+}
+
+.calltable table.table tbody tr.services {
+    background-color: #2f2f2f !important;
+    border-left: 4px solid #95a5a6 !important;
+}
+
+.calltable table.table tbody tr.sync {
+    background-color: #2a2a3a !important;
+    border-left: 4px solid #8e44ad !important;
+}
+
+.calltable table.table tbody tr.crypto {
+    background-color: #1d2b3a !important;
+    border-left: 4px solid #16a085 !important;
+}
+
+.calltable table.table tbody tr.browser {
+    background-color: #2b2b1d !important;
+    border-left: 4px solid #f39c12 !important;
+}
+
+.calltable table.table tbody tr.device {
+    background-color: #1d3a35 !important;
+    border-left: 4px solid #1abc9c !important;
+}
+
+/* Hover pop */
+.calltable table.table tbody tr.system:hover,
+.calltable table.table tbody tr.registry:hover,
+.calltable table.table tbody tr.filesystem:hover,
+.calltable table.table tbody tr.network:hover,
+.calltable table.table tbody tr.process:hover,
+.calltable table.table tbody tr.threading:hover,
+.calltable table.table tbody tr.services:hover,
+.calltable table.table tbody tr.sync:hover,
+.calltable table.table tbody tr.crypto:hover,
+.calltable table.table tbody tr.browser:hover,
+.calltable table.table tbody tr.device:hover {
+    filter: brightness(1.15);
+}
+
+/* Ensure text stays readable */
+.calltable table.table tbody tr td {
+    color: #eaeaea !important;
+}
+
+/* =========================
+   Category filter buttons
+   ========================= */
+
+/* Base category button tweaks */
+.btn-cat-registry,
+.btn-cat-filesystem,
+.btn-cat-network,
+.btn-cat-process,
+.btn-cat-threading,
+.btn-cat-services,
+.btn-cat-sync,
+.btn-cat-crypto,
+.btn-cat-browser,
+.btn-cat-device {
+    color: #eaeaea;
+    border-width: 1px;
+    font-weight: 500;
+}
+
+/* Registry */
+.btn-cat-registry {
+    background-color: #2b1d3a;
+    border-color: #9b59b6;
+}
+.btn-cat-registry:hover,
+.btn-cat-registry.active {
+    background-color: #9b59b6;
+    color: #fff;
+}
+
+/* Filesystem */
+.btn-cat-filesystem {
+    background-color: #1e3a2f;
+    border-color: #2ecc71;
+}
+.btn-cat-filesystem:hover,
+.btn-cat-filesystem.active {
+    background-color: #2ecc71;
+    color: #000;
+}
+
+/* Network */
+.btn-cat-network {
+    background-color: #1d2f3a;
+    border-color: #3498db;
+}
+.btn-cat-network:hover,
+.btn-cat-network.active {
+    background-color: #3498db;
+    color: #000;
+}
+
+/* Process */
+.btn-cat-process {
+    background-color: #3a1d1d;
+    border-color: #e74c3c;
+}
+.btn-cat-process:hover,
+.btn-cat-process.active {
+    background-color: #e74c3c;
+    color: #fff;
+}
+
+/* Threading */
+.btn-cat-threading {
+    background-color: #3a331d;
+    border-color: #f1c40f;
+}
+.btn-cat-threading:hover,
+.btn-cat-threading.active {
+    background-color: #f1c40f;
+    color: #000;
+}
+
+/* Services */
+.btn-cat-services {
+    background-color: #2f2f2f;
+    border-color: #95a5a6;
+}
+.btn-cat-services:hover,
+.btn-cat-services.active {
+    background-color: #95a5a6;
+    color: #000;
+}
+
+/* Synchronization */
+.btn-cat-sync {
+    background-color: #2a2a3a;
+    border-color: #8e44ad;
+}
+.btn-cat-sync:hover,
+.btn-cat-sync.active {
+    background-color: #8e44ad;
+    color: #fff;
+}
+
+/* Crypto */
+.btn-cat-crypto {
+    background-color: #1d2b3a;
+    border-color: #16a085;
+}
+.btn-cat-crypto:hover,
+.btn-cat-crypto.active {
+    background-color: #16a085;
+    color: #000;
+}
+
+/* Browser */
+.btn-cat-browser {
+    background-color: #2b2b1d;
+    border-color: #f39c12;
+}
+.btn-cat-browser:hover,
+.btn-cat-browser.active {
+    background-color: #f39c12;
+    color: #000;
+}
+
+/* Device */
+.btn-cat-device {
+    background-color: #1d3a35;
+    border-color: #1abc9c;
+}
+.btn-cat-device:hover,
+.btn-cat-device.active {
+    background-color: #1abc9c;
+    color: #000;
+}
+
+/* Default / All buttons */
+#badge_default_,
+#badge_all_ {
+    font-weight: 600;
+}

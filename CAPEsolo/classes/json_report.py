@@ -26,6 +26,21 @@ def BehaviorResults(analysisDir):
     behavior.set_path(analysisDir)
     behavior.set_options(options)
     results = behavior.run()
+
+    mycalls = []
+    procs = results.get("processes", [])
+    n = 0
+    for proc in procs:
+        try:
+            for call in proc.get("calls", []):
+                mycalls.append(call)
+
+            procs[n]["calls"] = mycalls
+        except Exception:
+            return None
+
+        n+= 1
+
     return results
 
 
@@ -55,9 +70,6 @@ def Payloads(analysisDir):
 
         for key, value in fileinfo.items():
             if key not in "path" and value:
-                if key == "size":
-                    value = str(value) + " bytes"
-
                 payloadData[key[0].upper() + key[1:]] = value
 
         results.append({str(path): payloadData})
@@ -67,6 +79,7 @@ def Payloads(analysisDir):
 
 def Configs(yara, analysisDir):
     configHits = []
+    detections = []
     for filehits in yara:
         paths = filehits.keys()
         for file in paths:
@@ -74,16 +87,19 @@ def Configs(yara, analysisDir):
                 capename = get_cape_name_from_yara_hit(hit)
                 if capename:
                     configHits.append({file: capename})
+                    if not capename in detections:
+                        detections.append(capename)
 
-    results = Extract(configHits, analysisDir, jsonResults=True)
-    return results
+    configs = Extract(configHits, analysisDir, jsonResults=True)
+
+    return configs, detections
 
 
 def WriteJsonFile(results):
     try:
         desktop = Path(os.path.expanduser("~/Desktop"))
         filepath = desktop / "report.json"
-        with open(filepath, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8", errors="replace") as f:
             dump(results, f, indent=4)
 
         return True, ""
@@ -100,7 +116,7 @@ def GetYara(yara, path):
     return None
 
 
-def GetResults(targetFile, analysisDir):
+def GetResults(targetFile, analysisDir, writeFile=True):
     results = {}
     results["target"] = TargetInfo(targetFile)
     results["behavior"] = BehaviorResults(analysisDir)
@@ -130,5 +146,8 @@ def GetResults(targetFile, analysisDir):
             if extracted:
                 payload[path]["strings"] = sorted(list(set(extracted)), key=lambda x: (len(x), x))
 
-    results["configs"] = Configs(yara.yara_results, analysisDir)
-    return WriteJsonFile(results)
+    results["configs"], results["detections"] = Configs(yara.yara_results, analysisDir)
+    if writeFile:
+        return WriteJsonFile(results)
+    else:
+        return results

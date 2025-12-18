@@ -3,13 +3,18 @@
 # See the file 'docs/LICENSE' for copying permission.
 
 import errno
+import html
 import json
 import logging
 import os
 import re
 import string
 import time
+from io import StringIO
 from pathlib import Path
+from collections import deque
+
+from markupsafe import Markup, escape
 
 from . import utils_dicts, utils_pretty_print_funcs as pp_funcs
 from .path_utils import path_is_dir, path_mkdir
@@ -493,3 +498,222 @@ def extract_strings(
 
     return strings
 
+
+def datefmt(value):
+    try:
+        value = str(value)
+        if len(value) < 19:
+            return value
+
+        return (
+            f"{value[2:6]}/{value[6:8]}/{value[8:10]} "
+            f"{value[10:12]}:{value[12:14]}:{value[14:16]} "
+            f"GMT{value[16:19]}"
+        )
+    except Exception:
+        return value
+
+
+def malware_config(obj, level=0):
+    """
+    Render malware config objects to HTML and return Markup so Jinja doesn't escape tags.
+
+    - dict -> HTML table (recursive)
+    - list -> HTML ul (recursive, 4 columns)
+      - empty list -> empty string
+      - single-item list -> unwrap and render item
+    - other -> HTML-escaped string
+    """
+    buf = StringIO()
+
+    def w(s):
+        buf.write(s)
+
+    def esc(x):
+        return html.escape("" if x is None else str(x), quote=True)
+
+    def render(value, lvl):
+        if isinstance(value, dict):
+            if not value:
+                return
+            w("<table class='table table-sm table-bordered' style='table-layout: fixed;'>")
+            w("<tbody>")
+            for k, v in value.items():
+                w("<tr>")
+                w("<th style='width: 25%; vertical-align: top; word-break: break-word;'>")
+                w(esc(k))
+                w("</th>")
+                w("<td style='word-break: break-word;'>")
+                render(v, lvl + 1)
+                w("</td>")
+                w("</tr>")
+            w("</tbody>")
+            w("</table>")
+            return
+
+        if isinstance(value, list):
+            if not value:
+                return
+            if len(value) == 1:
+                render(value[0], lvl)
+                return
+
+            w("<ul style='margin: 0; columns: 4;'>")
+            for item in value:
+                w("<li>")
+                render(item, lvl + 1)
+                w("</li>")
+            w("</ul>")
+            return
+
+        w(esc(value))
+
+    render(obj, level)
+    html_out = buf.getvalue()
+    buf.close()
+
+    return Markup(html_out)
+
+
+def dict2list(value):
+    if isinstance(value, dict):
+        return [value]
+    return value
+
+
+def getkey(mapping, value):
+    if isinstance(mapping, dict):
+        return mapping.get(value, "")
+    return None
+
+
+def parentfixup(value):
+    if "file_size" in value:
+        value["size"] = value["file_size"]
+    if "name" not in value:
+        value["name"] = value["sha256"]
+    return value
+
+
+def str2list(value):
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
+def proctreetolist(tree):
+    """
+    Flatten a process tree into a list with special markers:
+      {"startchildren": 1}
+      {"endchildren": 1}
+    """
+    outlist = []
+    if not tree:
+        return outlist
+
+    stack = deque(tree)
+
+    while stack:
+        node = stack.popleft()
+        is_special = False
+
+        if isinstance(node, dict) and ("startchildren" in node or "endchildren" in node):
+            is_special = True
+            outlist.append(node)
+        else:
+            newnode = {}
+
+            pid = node.get("pid")
+            name = node.get("name")
+            module_path = node.get("module_path")
+
+            newnode["pid"] = pid
+            newnode["name"] = name
+
+            if module_path:
+                newnode["module_path"] = module_path
+
+            environ = node.get("environ", {})
+            cmdline = environ.get("CommandLine", "") or ""
+
+            if cmdline:
+                if cmdline.startswith('"') and cmdline.find('"', 1) == -1:
+                    cmdline = cmdline[1:]
+
+                try:
+                    if module_path:
+                        mp_lower = module_path.lower()
+
+                        if cmdline.startswith('"'):
+                            close_idx = cmdline[1:].index('"') + 1
+                            argv0 = cmdline[: close_idx + 1].lower()
+                            rest = cmdline[close_idx + 1 :].strip()
+                            split_rest = rest.split()
+
+                            if mp_lower in argv0:
+                                cmdline = " ".join(split_rest).strip()
+                            else:
+                                cmdline = environ.get("CommandLine", "") or ""
+
+                        else:
+                            splitcmdline = cmdline.split()
+                            if splitcmdline:
+                                argv0 = splitcmdline[0].lower()
+                                if mp_lower in argv0:
+                                    cmdline = " ".join(splitcmdline[1:]).strip()
+                                else:
+                                    cmdline = environ.get("CommandLine", "") or ""
+
+                    if len(cmdline) >= 215:
+                        cmdline = f"{cmdline[:200]} ...(truncated)"
+
+                    newnode["commandline"] = convert_to_printable(cmdline)
+
+                except Exception as e:
+                    print(f"Proctreetolist error: {e}")
+
+            outlist.append(newnode)
+
+        if is_special:
+            continue
+
+        children = node.get("children")
+        if children:
+            stack.appendleft({"endchildren": 1})
+            stack.extendleft(reversed(children))
+            stack.appendleft({"startchildren": 1})
+
+    return outlist
+
+
+malware_name_url_pattern = (
+    '<a href="/analysis/search/detections:{name}">'
+    '<span style="font-weight: bold;">{name}</span>'
+    '</a>'
+)
+
+
+def get_detection_by_pid(dictionary, pid):
+    """
+    Return HTML links for malware detections associated with a PID.
+
+    - dictionary: mapping of PID (as str) -> list of malware names
+    - pid: process ID (int or str)
+
+    Returns Markup or None.
+    """
+    if not dictionary:
+        return None
+
+    detections = dictionary.get(str(pid))
+    if not detections:
+        return None
+
+    links = []
+    for name in detections:
+        safe_name = escape(name)
+        links.append(
+            malware_name_url_pattern.format(name=safe_name)
+        )
+
+    return Markup(" → ".join(links))

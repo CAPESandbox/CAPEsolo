@@ -1,0 +1,14 @@
+<div class="mt-4">
+    <div class="card">
+        <div class="card-header">
+            <h4>File Details</h4>
+        </div>
+        <div class="card-body">
+            {% set tab_name = 'static' %}
+            {% if results.target %}
+                {% set file = results.target %}
+                {% include "generic/_file_info.html" %}
+            {% endif %}
+        </div>
+    </div>
+</div>

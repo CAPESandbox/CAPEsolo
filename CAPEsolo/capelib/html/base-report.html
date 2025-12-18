@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <title>{% if title %}{{ title }} &#x2022; {% endif %}CAPESolo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CAPESolo">
+    <meta name="author" content="CAPESolo">
+
+    <style>
+        {
+        %
+        include
+        "css/bootstrap/bootstrap.min.css"
+        %
+        }
+        {
+        %
+        include
+        "css/fontawesome/all.min.css"
+        %
+        }
+        {
+        %
+        include
+        "css/style.css"
+        %
+        }
+    </style>
+</head>
+<body>
+<div class="container-fluid">
+    {% include "graphic/logo.html" %}
+    {% if not summary_report %}
+    <ul class="nav nav-tabs" id="myTab" role="tablist">
+        <li class="nav-item">
+            <a class="nav-link active" id="info-tab" data-bs-toggle="tab" href="#info" role="tab" aria-controls="info"
+               aria-selected="true">Overview</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="behavior-tab" data-bs-toggle="tab" href="#behavior" role="tab" aria-controls="behavior"
+               aria-selected="false">Behavior</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="dropped-tab" data-bs-toggle="tab" href="#dropped" role="tab" aria-controls="dropped"
+               aria-selected="false">Dropped</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="procdump-tab" data-bs-toggle="tab" href="#procdump" role="tab" aria-controls="procdump"
+               aria-selected="false">Process Dumps</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="payloads-tab" data-bs-toggle="tab" href="#payloads" role="tab" aria-controls="payloads"
+               aria-selected="false">Payloads</a>
+        </li>
+        {% if debugger %}
+        <li class="nav-item">
+            <a class="nav-link" id="debugger-tab" data-bs-toggle="tab" href="#debugger" role="tab" aria-controls="debugger"
+               aria-selected="false">Debugger</a>
+        </li>
+        {% endif %}
+    </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+
+    <footer class="footer">
+        {% if not summary_report %}
+        <p class="float-end"><a href="#">Back to top</a></p>
+        {% endif %}
+    </footer>
+</div>
+
+<script>
+    {% include "js/bootstrap/bootstrap.bundle.min.js" %}
+</script>
+</body>
+</html>

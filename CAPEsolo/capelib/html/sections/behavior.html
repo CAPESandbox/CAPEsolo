@@ -1,0 +1,23 @@
+{% set proctree_details = True %}
+{% include "sections/proctree.html" %}
+<div class="mt-4">
+    <div class="section-title">
+        <h4>Behavioral Analysis</h4>
+    </div>
+    {% set behavior = results.behavior %}
+    {% if behavior %}
+        <div class="mb-4">
+            {% include "sections/behavior/_tree.html" %}
+        </div>
+
+        <div class="mb-4">
+            {% include "sections/behavior/_processes.html" %}
+        </div>
+    {% else %}
+        <div class="alert alert-info text-center shadow-sm">
+            <i class="fas fa-info-circle fa-2x mb-3"></i>
+            <p class="mb-0">No behavioral analysis data available.</p>
+        </div>
+    {% endif %}
+
+</div>

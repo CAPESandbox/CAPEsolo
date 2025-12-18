@@ -1,0 +1,448 @@
+{# html/sections/behavior/_processes.html #}
+
+<script type="text/javascript">
+  // ---------- utilities ----------
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return "";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function paginationbar(pages, page) {
+    if (!pages || pages <= 1) return "";
+
+    function li(i, active) {
+      return '<li class="page-item' + (active ? ' active' : '') + '">' +
+             '<a class="page-link bg-dark border-secondary text-white" href="#" data-page="' + i + '">' + i + '</a></li>';
+    }
+
+    var out = "";
+    out += li(1, page === 1);
+
+    var start = Math.max(2, page - 5);
+    var end = Math.min(pages - 1, page + 5);
+
+    if (start > 2) {
+      out += "<li class='page-item disabled'><span class='page-link bg-dark border-secondary text-white'>...</span></li>";
+    }
+
+    for (var i = start; i <= end; i++) {
+      out += li(i, page === i);
+    }
+
+    if (end < pages - 1) {
+      out += "<li class='page-item disabled'><span class='page-link bg-dark border-secondary text-white'>...</span></li>";
+    }
+
+    out += li(pages, page === pages);
+    return out;
+  }
+
+  function getCallsForPid(pid) {
+    var el = document.getElementById("calls_json_" + pid);
+    if (!el) {
+      console.error("calls_json missing for pid", pid);
+      return [];
+    }
+    var raw = (el.textContent || el.innerText || "").trim();
+    if (!raw) return [];
+    try {
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.error("JSON.parse failed for pid", pid, e);
+      console.error("First 200 chars:", raw.slice(0, 200));
+      return [];
+    }
+  }
+
+  function renderCallsTable(calls) {
+    var html = [];
+    html.push('<table class="table table-bordered" style="table-layout: fixed;">');
+    html.push("<thead><tr>");
+    html.push('<th width="10%">Time</th>');
+    html.push('<th width="4%">TID</th>');
+    html.push('<th width="8%">Caller</th>');
+    html.push('<th width="15%">API</th>');
+    html.push('<th width="42%">Arguments</th>');
+    html.push('<th width="5%">Status</th>');
+    html.push('<th width="11%">Return</th>');
+    html.push('<th width="5%">Repeated</th>');
+    html.push("</tr></thead><tbody>");
+
+    for (var i = 0; i < calls.length; i++) {
+      var call = calls[i] || {};
+      html.push('<tr class="' + escapeHtml(call.category || "") + '" id="call_' + escapeHtml(call.id || 0) + '">');
+      html.push("<td>" + escapeHtml(call.timestamp || "") + "</td>");
+      html.push("<td>" + escapeHtml(call.thread_id || "") + "</td>");
+      html.push("<td>" + escapeHtml(call.caller || "") + "<br>" + escapeHtml(call.parentcaller || "") + "</td>");
+      html.push("<td><strong>" + escapeHtml(call.api || "") + "</strong></td>");
+
+      html.push('<td style="word-wrap: break-word;">');
+      var args = call.arguments || [];
+      for (var a = 0; a < args.length; a++) {
+        var arg = args[a] || {};
+        html.push('<span class="gray">' + escapeHtml(arg.name || "") + ":</span> ");
+        html.push('<span class="mono">' + escapeHtml(arg.pretty_value || arg.value || "") + "</span><br>");
+      }
+      html.push("</td>");
+
+      html.push("<td>" + (call.status ? "success" : "failed") + "</td>");
+      html.push('<td class="mono">' + escapeHtml(call.pretty_return || call.return || "") + "</td>");
+      html.push("<td>" + ((call.repeated && call.repeated > 0) ? escapeHtml(call.repeated) : "") + "</td>");
+      html.push("</tr>");
+    }
+
+    html.push("</tbody></table>");
+    return html.join("");
+  }
+
+  // ---------- core rendering ----------
+  function load_chunk(pid, pagenum) {
+    var container = document.getElementById("process_" + pid);
+    if (!container) {
+      console.error("process container not found", pid);
+      return;
+    }
+
+    var callTable = container.querySelector("div.calltable");
+    if (!callTable) return;
+
+    var calls = getCallsForPid(pid);
+    if (!calls.length) {
+      callTable.innerHTML = '<div class="alert alert-warning text-center">No API calls available.</div>';
+      return;
+    }
+
+    var pageSize = 100;
+    var start = (pagenum - 1) * pageSize;
+    var end = start + pageSize;
+    var pageCalls = calls.slice(start, end);
+
+    callTable.innerHTML = renderCallsTable(pageCalls);
+
+    var totalPages = Math.ceil(calls.length / pageSize);
+    var pagers = container.querySelectorAll("ul.pagination");
+    for (var i = 0; i < pagers.length; i++) {
+      pagers[i].innerHTML = paginationbar(totalPages, pagenum);
+    }
+
+    // show pagination in default mode
+    var topNav = document.getElementById("top_pagination");
+    var bottomNav = document.getElementById("bottom_pagination");
+    if (topNav) topNav.classList.remove("d-none");
+    if (bottomNav) bottomNav.classList.remove("d-none");
+  }
+
+  function load_filtered_chunk(pid, category, caller, tid) {
+    var container = document.getElementById("process_" + pid);
+    if (!container) {
+      console.error("process container not found", pid);
+      return;
+    }
+
+    var callTable = container.querySelector("div.calltable");
+    if (!callTable) return;
+
+    var calls = getCallsForPid(pid);
+    if (!calls.length) {
+      callTable.innerHTML = '<div class="alert alert-warning text-center">No API calls available.</div>';
+      return;
+    }
+
+    // API include/exclude: "CreateFile, !CloseHandle"
+    var apiInput = document.getElementById("apifilter_" + pid);
+    var inputValue = apiInput ? (apiInput.value || "").trim() : "";
+    var parts = inputValue ? inputValue.split(",") : [];
+
+    var includeApis = [];
+    var excludeApis = [];
+
+    for (var i = 0; i < parts.length; i++) {
+      var s = (parts[i] || "").trim();
+      if (!s) continue;
+      if (s[0] === "!") excludeApis.push(s.slice(1).trim().toLowerCase());
+      else includeApis.push(s.toLowerCase());
+    }
+
+    var callerFilter = (caller && caller !== "null") ? String(caller).trim().toLowerCase() : null;
+    var tidFilter = (tid && tid !== 0 && tid !== "0") ? String(tid).trim() : null;
+
+    function matches(call) {
+      call = call || {};
+
+      // category
+      if (category && category !== "all" && (call.category || "") !== category) return false;
+
+      // api include/exclude
+      var api = (call.api || "").toLowerCase();
+      for (var x = 0; x < excludeApis.length; x++) {
+        if (excludeApis[x] && api === excludeApis[x]) return false;
+      }
+      if (includeApis.length) {
+        var ok = false;
+        for (var y = 0; y < includeApis.length; y++) {
+          if (includeApis[y] && api === includeApis[y]) { ok = true; break; }
+        }
+        if (!ok) return false;
+      }
+
+      // caller filter
+      if (callerFilter) {
+        var c1 = (call.caller || "").toLowerCase();
+        var c2 = (call.parentcaller || "").toLowerCase();
+        if (c1.indexOf(callerFilter) === -1 && c2.indexOf(callerFilter) === -1) return false;
+      }
+
+      // thread_id filter (ONLY for filtering, as you said)
+      if (tidFilter) {
+        if (String(call.thread_id || "") !== tidFilter) return false;
+      }
+
+      return true;
+    }
+
+    var filtered = [];
+    for (var k = 0; k < calls.length; k++) {
+      if (matches(calls[k])) filtered.push(calls[k]);
+    }
+
+    if (!filtered.length) {
+      callTable.innerHTML = '<div class="alert alert-info text-center">No calls matched the current filters.</div>';
+    } else {
+      callTable.innerHTML = renderCallsTable(filtered);
+    }
+
+    // hide pagination in filtered mode (matches your prior behavior)
+    var topNav = document.getElementById("top_pagination");
+    var bottomNav = document.getElementById("bottom_pagination");
+    if (topNav) topNav.classList.add("d-none");
+    if (bottomNav) bottomNav.classList.add("d-none");
+
+    var pagers = container.querySelectorAll("ul.pagination");
+    for (var p = 0; p < pagers.length; p++) {
+      pagers[p].innerHTML = "";
+    }
+  }
+
+  // ---------- delegated handlers (this is what fixes "handler doesn't fire") ----------
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+
+    // pagination links
+    if (t && t.matches && t.matches("a.page-link[data-page]")) {
+      e.preventDefault();
+      var page = parseInt(t.getAttribute("data-page"), 10);
+      if (!page) return;
+
+      // find containing process pane
+      var pane = t.closest(".tab-pane[id^='process_']");
+      if (!pane) return;
+      var pid = pane.getAttribute("data-pid");
+      if (!pid) return;
+
+      load_chunk(pid, page);
+      return;
+    }
+
+    // badge buttons: must have data-pid and data-category
+    if (t && t.matches && t.matches("button.badge-filter[data-pid][data-category]")) {
+      e.preventDefault();
+      var pid2 = t.getAttribute("data-pid");
+      var cat = t.getAttribute("data-category");
+
+      if (cat === "default") load_chunk(pid2, 1);
+      else load_filtered_chunk(pid2, cat, "null", 0);
+
+      return;
+    }
+
+    // Apply button: filter all
+    if (t && t.matches && t.matches("button.apply-filter[data-pid]")) {
+      e.preventDefault();
+      var pid3 = t.getAttribute("data-pid");
+      load_filtered_chunk(pid3, "all", "null", 0);
+      return;
+    }
+
+    // Advanced filter submit button
+    if (t && t.matches && t.matches("button.adv-filter[data-pid]")) {
+      e.preventDefault();
+      var pid4 = t.getAttribute("data-pid");
+
+      var callerEl = document.getElementById("callerfilter_" + pid4);
+      var tidEl = document.getElementById("tidfilter_" + pid4);
+
+      var caller = callerEl ? (callerEl.value || "").trim() : "";
+      caller = caller ? caller : "null";
+
+      var tid = tidEl ? (tidEl.value || "").trim() : "";
+      tid = tid ? tid : 0;
+
+      load_filtered_chunk(pid4, "all", caller, tid);
+      return;
+    }
+
+  // deactivate all category buttons for this process
+  document.querySelectorAll(
+    "#process_" + pid + " .badge-filter"
+    ).forEach(btn => btn.classList.remove("active"));
+
+    // activate clicked button
+    t.classList.add("active");
+  });
+
+  // ---------- initial default render (so you see calls even before clicking) ----------
+  document.addEventListener("DOMContentLoaded", function () {
+    var panes = document.querySelectorAll(".tab-pane[id^='process_'][data-pid]");
+    for (var i = 0; i < panes.length; i++) {
+      var pid = panes[i].getAttribute("data-pid");
+      if (pid) {
+        // this ensures "Default" shows automatically
+        load_chunk(pid, 1);
+      }
+    }
+  });
+</script>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary">
+    <ul class="nav nav-pills card-header-pills" id="processTabs" role="tablist">
+      {% for process in behavior.processes %}
+      <li class="nav-item">
+        <a class="nav-link {% if loop.first %}active{% endif %}"
+           id="process-{{ process.process_id }}-tab"
+           data-bs-toggle="pill"
+           href="#process_{{ process.process_id }}"
+           role="tab"
+           aria-controls="process_{{ process.process_id }}"
+           aria-selected="{% if loop.first %}true{% else %}false{% endif %}">
+          {{ process.process_name }} <small>({{ process.process_id }})</small>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="card-body">
+    <div class="tab-content" id="processTabsContent">
+
+      {% for process in behavior.processes %}
+      <div class="tab-pane fade {% if loop.first %}show active{% endif %}"
+           id="process_{{ process.process_id }}"
+           role="tabpanel"
+           aria-labelledby="process-{{ process.process_id }}-tab"
+           data-pid="{{ process.process_id }}">
+
+        {# Embed calls JSON so JS can always parse it reliably #}
+        <script type="application/json" id="calls_json_{{ process.process_id }}">
+{{ process.calls | tojson }}
+        </script>
+
+        <div class="row mb-3">
+          <div class="col-12 text-center">
+            <div class="btn-group flex-wrap mb-2" role="group">
+              <button type="button" class="btn btn-outline-light badge-filter" data-pid="{{ process.process_id }}" data-category="default" id="badge_default_{{ process.process_id }}">Default</button>
+              <button type="button" class="btn btn-success badge-filter" data-pid="{{ process.process_id }}" data-category="all" id="badge_all_{{ process.process_id }}">All</button>
+              <button type="button" class="btn btn-cat-network badge-filter" data-pid="{{ process.process_id }}" data-category="network" id="badge_network_{{ process.process_id }}">Network</button>
+              <button type="button" class="btn btn-cat-filesystem badge-filter" data-pid="{{ process.process_id }}" data-category="filesystem" id="badge_filesystem_{{ process.process_id }}">Filesystem</button>
+              <button type="button" class="btn btn-cat-registry badge-filter" data-pid="{{ process.process_id }}" data-category="registry" id="badge_registry_{{ process.process_id }}">Registry</button>
+              <button type="button" class="btn btn-cat-process badge-filter" data-pid="{{ process.process_id }}" data-category="process" id="badge_process_{{ process.process_id }}">Process</button>
+              <button type="button" class="btn btn-cat-threading badge-filter" data-pid="{{ process.process_id }}" data-category="threading" id="badge_threading_{{ process.process_id }}">Threading</button>
+              <button type="button" class="btn btn-cat-services badge-filter" data-pid="{{ process.process_id }}" data-category="services" id="badge_services_{{ process.process_id }}">Services</button>
+              <button type="button" class="btn btn-cat-crypto badge-filter" data-pid="{{ process.process_id }}" data-category="crypto" id="badge_crypto_{{ process.process_id }}">Crypto</button>
+              <button type="button" class="btn btn-cat-browser badge-filter" data-pid="{{ process.process_id }}" data-category="browser" id="badge_browser_{{ process.process_id }}">Browser</button>
+              <button type="button" class="btn btn-cat-device badge-filter" data-pid="{{ process.process_id }}" data-category="device" id="badge_device_{{ process.process_id }}">Device</button>
+              <button type="button" class="btn btn-cat-synchronization badge-filter" data-pid="{{ process.process_id }}" data-category="sync" id="badge_sync_{{ process.process_id }}">Sync</button>
+            </div>
+
+            <div class="input-group mb-2 w-50 mx-auto">
+              <input type="text" class="form-control bg-secondary text-white border-secondary"
+                     id="apifilter_{{ process.process_id }}"
+                     placeholder="Filter API calls (e.g. 'CreateFile, !CloseHandle')">
+              <button class="btn btn-primary apply-filter" type="button" data-pid="{{ process.process_id }}">
+                Apply
+              </button>
+            </div>
+
+            <button class="btn btn-sm btn-link text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#advFilter_{{ process.process_id }}">
+              Advanced Filters
+            </button>
+
+            <div class="collapse mt-2" id="advFilter_{{ process.process_id }}">
+              <div class="card card-body bg-secondary">
+                <div class="row g-3">
+                  <div class="col">
+                    <input type="text" class="form-control bg-dark text-white border-0"
+                           id="callerfilter_{{ process.process_id }}" placeholder="Caller">
+                  </div>
+                  <div class="col">
+                    <input type="text" class="form-control bg-dark text-white border-0"
+                           id="tidfilter_{{ process.process_id }}" placeholder="Thread ID">
+                  </div>
+                  <div class="col-auto">
+                    <button class="btn btn-dark adv-filter" type="button" data-pid="{{ process.process_id }}">
+                      Filter
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <nav id="top_pagination" aria-label="Page navigation" class="mb-2">
+          <ul class="pagination justify-content-center"></ul>
+        </nav>
+
+        <div class="calltable">
+          {# Fallback: show something even if JS fails completely #}
+          {% if process.calls is defined and process.calls %}
+            <div class="text-muted small mb-2">Showing first {{ 100 if process.calls|length > 100 else process.calls|length }} calls (fallback).</div>
+            <table class="table table-bordered" style="table-layout: fixed;">
+              <thead>
+                <tr>
+                  <th width="10%">Time</th><th width="4%">TID</th><th width="8%">Caller</th><th width="15%">API</th>
+                  <th width="42%">Arguments</th><th width="5%">Status</th><th width="11%">Return</th><th width="5%">Repeated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for call in process.calls[:100] %}
+                  <tr class="{{ call.category|default('') }}" id="call_{{ call.id|default(0) }}">
+                    {# You can swap this to include your _api_call.html if you want #}
+                    <td>{{ call.timestamp|default('') }}</td>
+                    <td>{{ call.thread_id|default('') }}</td>
+                    <td>{{ call.caller|default('') }}<br>{{ call.parentcaller|default('') }}</td>
+                    <td><strong>{{ call.api|default('') }}</strong></td>
+                    <td style="word-wrap: break-word;">
+                      {% for arg in call.arguments|default([]) %}
+                        <span class="gray">{{ arg.name|default('') }}:</span>
+                        <span class="mono">{{ arg.pretty_value|default(arg.value|default('')) }}</span><br>
+                      {% endfor %}
+                    </td>
+                    <td>{% if call.status %}success{% else %}failed{% endif %}</td>
+                    <td class="mono">{{ call.pretty_return|default(call.return|default('')) }}</td>
+                    <td>{% if call.repeated|default(0) > 0 %}{{ call.repeated }}{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="alert alert-warning text-center">No API calls available.</div>
+          {% endif %}
+        </div>
+
+        <nav id="bottom_pagination" aria-label="Page navigation" class="mt-2">
+          <ul class="pagination justify-content-center"></ul>
+        </nav>
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
