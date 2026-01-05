@@ -5,8 +5,10 @@ from pathlib import Path
 from CAPEsolo.capelib.behavior import BehaviorAnalysis
 from CAPEsolo.capelib.cape_utils import get_cape_name_from_yara_hit, metadata_processing
 from CAPEsolo.capelib.objects import File
+from CAPEsolo.capelib.parse_pe import PortableExecutable
 from CAPEsolo.capelib.signatures import RunSignatures
 from CAPEsolo.capelib.utils import LoadFilesJson, extract_strings
+
 from .behavior_panel import Options
 from .configs_panel import Extract
 from .process_yara import ProcessYara
@@ -15,6 +17,8 @@ from .process_yara import ProcessYara
 def TargetInfo(targetFile):
     fileObj = File(str(targetFile))
     fileinfo = fileObj.get_all()[0]
+    peData = PortableExecutable(str(targetFile)).run()
+    fileinfo["pe"] = peData
     return fileinfo
 
 
@@ -39,7 +43,7 @@ def BehaviorResults(analysisDir):
         except Exception:
             return None
 
-        n+= 1
+        n += 1
 
     return results
 
@@ -70,7 +74,7 @@ def Payloads(analysisDir):
 
         for key, value in fileinfo.items():
             if key not in "path" and value:
-                payloadData[key[0].upper() + key[1:]] = value
+                payloadData[key] = value
 
         results.append({str(path): payloadData})
 

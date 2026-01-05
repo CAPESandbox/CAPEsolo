@@ -9,6 +9,7 @@ import logging
 import magic
 import struct
 import subprocess
+import tlsh
 from pathlib import Path
 
 import pefile
@@ -38,6 +39,8 @@ class File:
         self._sha1 = None
         self._sha256 = None
         self._sha512 = None
+        self._sha3_384 = None
+        self._tlsh_hash = None
         self._pefile = False
         self.file_type = None
         self.pe = None
@@ -79,6 +82,7 @@ class File:
         sha256 = hashlib.sha256()
         sha512 = hashlib.sha512()
         sha3_384 = hashlib.sha3_384()
+        tlsh_hash = tlsh.Tlsh()
 
         for chunk in self.get_chunks():
             crc = binascii.crc32(chunk, crc)
@@ -87,6 +91,7 @@ class File:
             sha256.update(chunk)
             sha512.update(chunk)
             sha3_384.update(chunk)
+            tlsh_hash.update(chunk)
 
         self._crc32 = "".join(f"{(crc >> i) & 0xFF:02X}" for i in (24, 16, 8, 0))
         self._md5 = md5.hexdigest()
@@ -94,6 +99,9 @@ class File:
         self._sha256 = sha256.hexdigest()
         self._sha512 = sha512.hexdigest()
         self._sha3_384 = sha3_384.hexdigest()
+        with contextlib.suppress(ValueError):
+            tlsh_hash.final()
+            self._tlsh_hash = tlsh_hash.hexdigest()
 
     @property
     def file_data(self):
@@ -157,6 +165,17 @@ class File:
         if not self._sha3_384:
             self.calc_hashes()
         return self._sha3_384
+
+    def get_tlsh(self):
+        """
+        Get TLSH.
+        @return: TLSH.
+        """
+        if not hasattr(self, "_tlsh_hash"):
+            return None
+        if not self._tlsh_hash:
+            self.calc_hashes()
+        return self._tlsh_hash
 
     def get_rh_hash(self):
         if not self.pe:
@@ -319,6 +338,7 @@ class File:
             "sha512": self.get_sha512(),
             "rh_hash": self.get_rh_hash(),
             "sha3_384": self.get_sha3_384(),
+            "tlsh": self.get_tlsh(),
         }
 
     def get_all(self):
@@ -339,6 +359,7 @@ class File:
             "sha512": self.get_sha512(),
             "rh_hash": self.get_rh_hash(),
             "sha3_384": self.get_sha3_384(),
+            "tlsh": self.get_tlsh(),
         }
 
         return infos, self.pe

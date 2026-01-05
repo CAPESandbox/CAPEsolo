@@ -402,7 +402,7 @@ class BsonStore(ProtocolHandler):
                 return
 
             try:
-                dec = bson.loads(data)
+                dec = bson.decode(data)
             except Exception as e:
                 log.warning(
                     "BsonParser decoding problem %s on data[:50] %s", e, data[:50]
