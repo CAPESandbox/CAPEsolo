@@ -13,16 +13,6 @@ from .path_utils import path_get_filename
 from .utils import default_converter
 
 
-# The BSON module provided by pymongo works through its "BSON" class.
-if hasattr(bson, "BSON"):
-    def bson_decode(d):
-        return bson.decode(d)
-
-# The BSON module provided by "pip3 install bson" works through the "loads" function (just like pickle etc.)
-elif hasattr(bson, "loads"):
-    def bson_decode(d):
-        return bson.loads(d)
-
 log = logging.getLogger(__name__)
 
 ###############################################################################
@@ -196,7 +186,7 @@ class BsonParser:
                 return
 
             try:
-                dec = bson_decode(data)
+                dec = bson.decode(data)
             except Exception as e:
                 log.warning("BsonParser decoding problem %s on data[:50] %s", e, data[:50])
                 return False

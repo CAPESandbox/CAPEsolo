@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "CAPEsolo"
-version = "0.5.17"
+version = "0.5.16"
 description = "Standalone CAPEMON"
 authors = ["enzok <7831008+enzok@users.noreply.github.com>"]
 readme = "README.md"
