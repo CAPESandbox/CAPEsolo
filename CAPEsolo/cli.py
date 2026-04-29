@@ -13,6 +13,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -65,22 +66,102 @@ class CapesoloApp(wx.App):
 
 def main():
     mutex = acquire_lock()
-    parser = argparse.ArgumentParser(description="Capesolo utility functions.")
-    parser.add_argument(
-        "--update_yara",
-        help="Update yara rules from CAPEv2 and community",
-        action="store_true",
-    )
+    try:
+        parser = argparse.ArgumentParser(description="Capesolo utility functions.")
+        parser.add_argument(
+            "--update_yara",
+            help="Update yara rules from CAPEv2 and community",
+            action="store_true",
+        )
+        parser.add_argument(
+            "--headless-analyze",
+            dest="headless_analyze",
+            help="Run a single headless analysis for the given sample path",
+            type=str,
+        )
+        parser.add_argument(
+            "--package",
+            default="Auto-detect",
+            help="Analysis package for headless mode (default: Auto-detect)",
+        )
+        parser.add_argument(
+            "--options",
+            default="",
+            help="Comma-separated analyzer options for headless mode",
+        )
+        parser.add_argument(
+            "--timeout",
+            default=200,
+            type=int,
+            help="Analysis timeout in seconds for headless mode",
+        )
+        parser.add_argument(
+            "--enforce-timeout",
+            action="store_true",
+            help="Force full timeout in headless mode",
+        )
+        parser.add_argument(
+            "--headless-html-report",
+            action="store_true",
+            help="Generate HTML report on successful headless completion",
+        )
+        parser.add_argument(
+            "--headless-json",
+            action="store_true",
+            help="Print JSON analysis results on successful headless completion",
+        )
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    if args.update_yara:
-        _ = UpdateYara(Path(CAPESOLO_ROOT))
-    else:
+        if args.update_yara:
+            _ = UpdateYara(Path(CAPESOLO_ROOT))
+            return 0
+
+        if args.headless_analyze:
+            try:
+                from CAPEsolo.mcp_server import AnalysisJobManager
+            except ImportError as e:
+                print(f"Headless mode unavailable: {e}")
+                return 1
+
+            manager = AnalysisJobManager()
+            run = manager.run_single(
+                sample_path=args.headless_analyze,
+                package=args.package,
+                options=args.options,
+                timeout=args.timeout,
+                enforce_timeout=args.enforce_timeout,
+                run_from_current_directory=True,
+            )
+            if not run.get("accepted"):
+                print(run.get("error", "Headless analysis was not accepted"))
+                return 1
+
+            job_id = run["job_id"]
+            status = run["status"]
+            state = status.get("state")
+            print(f"job_id={job_id}")
+            print(f"state={state}")
+            if state != "completed":
+                if status.get("error"):
+                    print(status["error"])
+                return 1
+
+            if args.headless_json:
+                results = manager.get_results(job_id=job_id, include_strings=True)
+                print(json.dumps(results, indent=2))
+
+            if args.headless_html_report:
+                report = manager.render_html_report(job_id=job_id)
+                print(json.dumps(report, indent=2))
+
+            return 0
+
         app = CapesoloApp()
         app.MainLoop()
-
-    release_lock(mutex)
+        return 0
+    finally:
+        release_lock(mutex)
 
 def acquire_lock():
     mutex = KERNEL32.CreateMutexA(None, False, MUTEX_NAME)
@@ -97,4 +178,4 @@ def release_lock(mutex):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

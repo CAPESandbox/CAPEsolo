@@ -50,6 +50,7 @@ from lib.common.defines import (
     SYSTEM_INFO,
     TH32CS_SNAPPROCESS,
     THREAD_ALL_ACCESS,
+    ULONG_PTR,
 )
 
 from lib.common.constants import (
@@ -100,6 +101,8 @@ KERNEL32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
 KERNEL32.OpenThread.restype = HANDLE
 KERNEL32.OpenThread.argtypes = [DWORD, BOOL, DWORD]
 KERNEL32.GetLastError.restype = DWORD
+
+NTDLL.NtQueryInformationProcess.restype = c_int
 
 
 def is_os_64bit():
@@ -251,10 +254,12 @@ class Process:
 
         ret = NTDLL.NtQueryInformationProcess(self.h_process, 27, byref(pbi), sizeof(pbi), byref(size))
 
-        if NT_SUCCESS(ret) and size.value > 16:
+        if NT_SUCCESS(ret):
+            offset = 4 + sizeof(ULONG_PTR)
             try:
-                fbuf = pbi.raw[16 : size.value]
-                return fbuf.decode("utf16", errors="ignore").rstrip("\x00")
+                fbuf = pbi.raw[offset:]
+                fbuf = fbuf[: fbuf.find(b"\0\0") + 1]
+                return fbuf.decode("utf16", errors="ignore")
             except Exception as e:
                 log.info(e)
 
@@ -270,6 +275,7 @@ class Process:
         """Get the image name; returns an empty string on error."""
         if not self.h_process:
             self.open()
+
         ret = ""
         image_name_buf = c_buffer(MAX_PATH)
         n = PSAPI.GetProcessImageFileNameA(self.h_process, image_name_buf, MAX_PATH)
@@ -306,7 +312,6 @@ class Process:
         size = c_ulong()
 
         # Set return value to signed 32bit integer.
-        NTDLL.NtQueryInformationProcess.restype = c_int
         NTDLL.NtQueryInformationProcess.argtypes = [
             HANDLE,
             c_int,
@@ -577,12 +582,7 @@ class Process:
 
         # Use the custom execution directory if provided, otherwise launch in the same location
         # where the sample resides (default %TEMP%)
-        if OPT_EXECUTIONDIR in self.options.keys():
-            execution_directory = self.options[OPT_EXECUTIONDIR]
-        elif OPT_CURDIR in self.options.keys():
-            execution_directory = self.options[OPT_CURDIR]
-        else:
-            execution_directory = os.getenv("TEMP")
+        execution_directory = self.options.get(OPT_EXECUTIONDIR) or self.options.get(OPT_CURDIR) or os.getenv("TEMP")
 
         # Try to create the custom directories so that the execution path is deemed valid
         create_custom_folders(execution_directory)
