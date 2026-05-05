@@ -13,19 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from ctypes import (
-    POINTER,
-    byref,
-    c_buffer,
-    c_int,
-    c_ulong,
-    c_void_p,
-    create_string_buffer,
-    sizeof,
-    windll,
-    ArgumentError,
-)
-from ctypes.wintypes import BOOL, DWORD, HANDLE
+from ctypes import POINTER, byref, c_buffer, c_int, c_ulong, create_string_buffer, sizeof, windll, ArgumentError, Structure, c_ushort, c_void_p, string_at, create_unicode_buffer
 from pathlib import Path
 from shutil import copy
 
@@ -53,6 +41,7 @@ from lib.common.defines import (
     ULONG_PTR,
 )
 
+
 from lib.common.constants import (
     CAPEMON32_NAME,
     CAPEMON64_NAME,
@@ -62,12 +51,15 @@ from lib.common.constants import (
     PATHS,
     PIPE,
     SHUTDOWN_MUTEX,
-    SIDELOADER32_NAME,
-    SIDELOADER64_NAME,
     TERMINATE_EVENT,
     TTD32_NAME,
     TTD64_NAME,
+    SIDELOADER32_NAME,
+    SIDELOADER64_NAME,
 )
+
+
+from lib.core.log import LogServer
 
 from lib.common.constants import OPT_CURDIR, OPT_EXECUTIONDIR
 from lib.common.errors import get_error_string
@@ -75,9 +67,6 @@ from lib.common.rand import random_string
 from lib.common.results import upload_to_host
 from lib.core.compound import create_custom_folders
 from lib.core.config import Config
-from lib.core.log import LogServer
-
-# from lib.common.defines import STILL_ACTIVE
 
 # CSIDL constants
 CSIDL_WINDOWS = 0x0024
@@ -103,6 +92,7 @@ KERNEL32.OpenThread.argtypes = [DWORD, BOOL, DWORD]
 KERNEL32.GetLastError.restype = DWORD
 
 NTDLL.NtQueryInformationProcess.restype = c_int
+NTDLL.NtQueryInformationProcess.argtypes = [c_void_p, c_int, c_void_p, c_ulong, POINTER(c_ulong)]
 
 
 def is_os_64bit():
@@ -144,6 +134,14 @@ def NT_SUCCESS(val):
     return val >= 0
 
 
+class UNICODE_STRING(Structure):
+    _fields_ = [
+        ("Length", c_ushort),
+        ("MaximumLength", c_ushort),
+        ("Buffer", c_void_p),
+    ]
+
+
 class Process:
     """Windows process."""
 
@@ -153,16 +151,7 @@ class Process:
     # which check whether the VM has only been up for <10 minutes.
     startup_time = random.randint(1, 30) * 20 * 60 * 1000
 
-    def __init__(
-        self,
-        options=None,
-        config=None,
-        pid=0,
-        h_process=0,
-        thread_id=0,
-        h_thread=0,
-        suspended=False,
-    ):
+    def __init__(self, options=None, config=None, pid=0, h_process=0, thread_id=0, h_thread=0, suspended=False):
         """@param pid: PID.
         @param h_process: process handle.
         @param thread_id: thread id.
@@ -196,6 +185,8 @@ class Process:
         """Open a process and/or thread.
         @return: operation status.
         """
+        # Logging calls in this method can get really noisy since it's called a
+        # lot. As a result only failed ctypes calls are logged, nothing else.
         ret = bool(self.pid or self.thread_id)
         if self.pid and not self.h_process:
             if self.pid == os.getpid():
@@ -204,10 +195,16 @@ class Process:
                 self.h_process = KERNEL32.OpenProcess(PROCESS_ALL_ACCESS, False, self.pid)
                 if not self.h_process:
                     self.h_process = KERNEL32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, self.pid)
+
             ret = True
+
+            if not self.h_process:
+                log.warning("failed to open process %d", self.pid)
 
         if self.thread_id and not self.h_thread:
             self.h_thread = KERNEL32.OpenThread(THREAD_ALL_ACCESS, False, self.thread_id)
+            if not self.h_thread:
+                log.warning("OpenThread(THREAD_ALL_ACCESS, ...) failed for thread %d", self.thread_id)
             ret = True
         return ret
 
@@ -229,14 +226,26 @@ class Process:
 
     def exit_code(self):
         """Get process exit code.
+
+        Gets the exit code for the process handle via kernel32 and returns its
+        value. Note a valid value can be returned for processes that have not
+        exited, e.g. exit code 259 indicates the process is still active.
+
         @return: exit code value.
         """
         if not self.h_process:
             self.open()
 
         exit_code = c_ulong(0)
-        KERNEL32.GetExitCodeProcess(self.h_process, byref(exit_code))
-
+        ok = KERNEL32.GetExitCodeProcess(self.h_process, byref(exit_code))
+        if not ok:
+            log.debug("Failed getting exit code for %s", self)
+            return None
+        # Uncommenting the lines below will spam the analyzer.log file.
+        # if exit_code.value == STILL_ACTIVE:
+        #     log.debug("%s is STILL_ACTIVE", self)
+        # else:
+        #     log.debug("%s exit code is %d", self, exit_code.value)
         return exit_code.value
 
     def get_filepath(self):
@@ -246,20 +255,15 @@ class Process:
         if not self.h_process:
             self.open()
 
-        pbi = create_string_buffer(1024)
-        size = c_ulong()
-
-        # Set return value to signed 32bit integer.
-        NTDLL.NtQueryInformationProcess.restype = c_int
+        pbi = create_string_buffer(4096)
+        size = c_int()
 
         ret = NTDLL.NtQueryInformationProcess(self.h_process, 27, byref(pbi), sizeof(pbi), byref(size))
-
-        if NT_SUCCESS(ret):
-            offset = 4 + sizeof(ULONG_PTR)
+        if NT_SUCCESS(ret) and size.value >= sizeof(UNICODE_STRING):
             try:
-                fbuf = pbi.raw[offset:]
-                fbuf = fbuf[: fbuf.find(b"\0\0") + 1]
-                return fbuf.decode("utf16", errors="ignore")
+                us = UNICODE_STRING.from_buffer_copy(pbi.raw[: sizeof(UNICODE_STRING)])
+                if us.Buffer and us.Length:
+                    return string_at(us.Buffer, us.Length).decode("utf-16le", errors="ignore")
             except Exception as e:
                 log.info(e)
 
@@ -267,9 +271,9 @@ class Process:
 
     def get_folder_path(self, csidl):
         """Use SHGetFolderPathW to get the system folder path for a given CSIDL."""
-        buf = create_string_buffer(MAX_PATH)
-        windll.shell32.SHGetFolderPathA(None, csidl, None, 0, buf)
-        return buf.value.decode("utf-8", errors="ignore")
+        buf = create_unicode_buffer(MAX_PATH)
+        windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf)
+        return buf.value
 
     def get_image_name(self):
         """Get the image name; returns an empty string on error."""
@@ -311,15 +315,6 @@ class Process:
         pbi = PROCESS_BASIC_INFORMATION()
         size = c_ulong()
 
-        # Set return value to signed 32bit integer.
-        NTDLL.NtQueryInformationProcess.argtypes = [
-            HANDLE,
-            c_int,
-            c_void_p,
-            c_ulong,
-            POINTER(c_ulong),
-        ]
-
         ret = NTDLL.NtQueryInformationProcess(self.h_process, 0, byref(pbi), sizeof(pbi), byref(size))
 
         if NT_SUCCESS(ret) and size.value == sizeof(pbi):
@@ -334,7 +329,7 @@ class Process:
             if not directory.is_dir():
                 return False
 
-            if (directory / "capemon.dll").exists():
+            if (directory/"capemon.dll").exists():
                 return False
 
             # Early exit if directory is a known system location
@@ -344,7 +339,7 @@ class Process:
                     Path(self.get_folder_path(CSIDL_SYSTEM)).resolve(),
                     Path(self.get_folder_path(CSIDL_SYSTEMX86)).resolve(),
                     Path(self.get_folder_path(CSIDL_PROGRAM_FILES)).resolve(),
-                    Path(self.get_folder_path(CSIDL_PROGRAM_FILESX86)).resolve(),
+                    Path(self.get_folder_path(CSIDL_PROGRAM_FILESX86)).resolve()
                 }
                 if directory.resolve() in system_dirs:
                     return False
@@ -474,18 +469,7 @@ class Process:
         pi = PROCESS_INFORMATION()
         cr = CREATE_NEW_CONSOLE
 
-        ldp = KERNEL32.CreateProcessW(
-            new_exe,
-            None,
-            None,
-            None,
-            None,
-            cr,
-            None,
-            os.getenv("TEMP"),
-            byref(si),
-            byref(pi),
-        )
+        ldp = KERNEL32.CreateProcessW(new_exe, None, None, None, None, cr, None, os.getenv("TEMP"), byref(si), byref(pi))
         if not ldp:
             if os_is_64bit:
                 KERNEL32.Wow64RevertWow64FsRedirection(wow64)
@@ -500,15 +484,7 @@ class Process:
             config.write(f"pipe={PIPE}\n")
 
         log.info("Sending startup information")
-        hFile = KERNEL32.CreateFileW(
-            PATH_KERNEL_DRIVER,
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            None,
-            OPEN_EXISTING,
-            0,
-            None,
-        )
+        hFile = KERNEL32.CreateFileW(PATH_KERNEL_DRIVER, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
         if os_is_64bit:
             KERNEL32.Wow64RevertWow64FsRedirection(wow64)
         if hFile:
@@ -535,16 +511,7 @@ class Process:
             msg = f"{self.pid}_{ppid}_{os.getpid()}_{pi.dwProcessId}_{pid_vboxservice}_{pid_vboxtray}\0"
             KERNEL32.DeviceIoControl(hFile, IOCTL_PID, msg, len(msg), None, 0, byref(bytes_returned), None)
             msg = f"{Path.cwd()}\0"
-            KERNEL32.DeviceIoControl(
-                hFile,
-                IOCTL_CUCKOO_PATH,
-                msg,
-                len(msg),
-                None,
-                0,
-                byref(bytes_returned),
-                None,
-            )
+            KERNEL32.DeviceIoControl(hFile, IOCTL_CUCKOO_PATH, msg, len(msg), None, 0, byref(bytes_returned), None)
         else:
             log.warning("Failed to access kernel driver")
 
@@ -588,16 +555,7 @@ class Process:
         create_custom_folders(execution_directory)
 
         created = KERNEL32.CreateProcessW(
-            path,
-            arguments,
-            None,
-            None,
-            None,
-            creation_flags,
-            None,
-            execution_directory,
-            byref(startup_info),
-            byref(process_info),
+            path, arguments, None, None, None, creation_flags, None, execution_directory, byref(startup_info), byref(process_info)
         )
 
         if created:
@@ -605,12 +563,7 @@ class Process:
             self.h_process = process_info.hProcess
             self.thread_id = process_info.dwThreadId
             self.h_thread = process_info.hThread
-            log.info(
-                'Successfully executed process from path "%s" with arguments "%s" with pid %d',
-                path,
-                args or "",
-                self.pid,
-            )
+            log.info('Successfully executed process from path "%s" with arguments "%s" with pid %d', path, args or "", self.pid)
             if kernel_analysis:
                 return self.kernel_analyze()
             return True
@@ -659,34 +612,23 @@ class Process:
 
         try:
             result = subprocess.run(
-                [
-                    os.path.join(Path.cwd(), ttd_name),
-                    "-accepteula",
-                    "-stop",
-                    str(self.pid),
-                ],
+                [os.path.join(Path.cwd(), ttd_name), "-accepteula", "-stop", str(self.pid)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=1,
             )
+            if result.stdout:
+                log.info(" ".join(result.stdout.split()))
+            if result.stderr:
+                log.error(" ".join(result.stderr.split()))
         except subprocess.TimeoutExpired as e:
             if e.stdout:
                 log.info(" ".join(e.stdout.split()))
             if e.stderr:
                 log.error(" ".join(e.stderr.split()))
         except Exception as e:
-            log.error(
-                "Exception attempting TTD stop for %s process with pid %d: %s",
-                bit_str,
-                self.pid,
-                e,
-            )
-
-        if result.stdout:
-            log.info(" ".join(result.stdout.split()))
-        if result.stderr:
-            log.error(" ".join(result.stderr.split()))
+            log.error("Exception attempting TTD stop for %s process with pid %d: %s", bit_str, self.pid, e)
 
         log.info("Stopped TTD for %s process with pid %d", bit_str, self.pid)
 
@@ -722,6 +664,8 @@ class Process:
             ttd = int(self.options.get("ttd", 0))
         except (ValueError, TypeError):
             ttd = 0
+        if ttd:
+            self.ttd_stop()
 
     def terminate(self):
         """Terminate process.
@@ -752,7 +696,6 @@ class Process:
         return False
 
     def write_monitor_config(self, interest=None, nosleepskip=False):
-
         config_path = os.path.join(Path.cwd(), "dll", f"{self.pid}.ini")
         log.info("Monitor config for process %s: %s", self.pid, config_path)
 
@@ -842,27 +785,18 @@ class Process:
         dll = os.path.join(Path.cwd(), dll)
 
         if not os.path.exists(bin_name):
-            log.warning(
-                "Invalid loader path %s for injecting DLL in process with pid %d, injection aborted",
-                bin_name,
-                self.pid,
-            )
-            log.error(
-                "Please ensure the %s loader is in analyzer/windows/bin in order to analyze %s binaries",
-                bit_str,
-                bit_str,
-            )
+            log.warning("Invalid loader path %s for injecting DLL in process with pid %d, injection aborted", bin_name, self.pid)
+            log.error("Please ensure the %s loader is in analyzer/windows/bin in order to analyze %s binaries", bit_str, bit_str)
             return False
 
         if not os.path.exists(dll):
-            log.warning(
-                "Invalid path %s for monitor DLL to be injected in process with pid %d, injection aborted",
-                dll,
-                self.pid,
-            )
+            log.warning("Invalid path %s for monitor DLL to be injected in process with pid %d, injection aborted", dll, self.pid)
             return False
 
-        ttd = int(self.options.get("ttd", 0))
+        try:
+            ttd = int(self.options.get("ttd", 0))
+        except (ValueError, TypeError):
+            ttd = 0
         if ttd:
             self.options["no-iat"] = 1
 
@@ -898,12 +832,7 @@ class Process:
             if ret.returncode == 1:
                 log.info("Injected into %s %s", bit_str, self)
             elif ret.returncode != 0:
-                log.error(
-                    "Unable to inject into %s process with pid %d, error: %d",
-                    bit_str,
-                    self.pid,
-                    ret.returncode,
-                )
+                log.error("Unable to inject into %s process with pid %d, error: %d", bit_str, self.pid, ret.returncode)
         except Exception as e:
             log.error("Error running process: %s", e)
             return False
@@ -912,7 +841,7 @@ class Process:
             return True
 
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     os.path.join(Path.cwd(), ttd_name),
                     "-accepteula",
@@ -926,18 +855,17 @@ class Process:
                 text=True,
                 timeout=1,
             )
+            if result.stdout:
+                log.info(" ".join(result.stdout.split()))
+            if result.stderr:
+                log.error(" ".join(result.stderr.split()))
         except subprocess.TimeoutExpired as e:
             if e.stdout:
                 log.info(" ".join(e.stdout.split()))
             if e.stderr:
                 log.error(" ".join(e.stderr.split()))
         except Exception as e:
-            log.error(
-                "Exception attempting TTD injection into %s process with pid %d: %s",
-                bit_str,
-                self.pid,
-                e,
-            )
+            log.error("Exception attempting TTD injection into %s process with pid %d: %s", bit_str, self.pid, e)
 
         return True
 
@@ -953,7 +881,7 @@ class Process:
         try:
             upload_to_host(file_path, os.path.join("memory", f"{self.pid}.dmp"), category="memory")
         except Exception as e:
-            log.error(e, exc_info=True)
+            log.exception(e)
             log.error(os.path.join("memory", f"{self.pid}.dmp"))
             log.error(file_path)
         log.info("Memory dump of process %d uploaded", self.pid)
@@ -996,10 +924,5 @@ class Process:
         except OSError as e:
             log.error("Failed to copy DLL: %s", e)
             return
-        log.info(
-            "%s DLL to sideload is %s, sideloader %s",
-            bit_str,
-            os.path.join(directory_path, "capemon.dll"),
-            os.path.join(directory_path, "version.dll"),
-        )
+        log.info("%s DLL to sideload is %s, sideloader %s", bit_str, os.path.join(directory_path, "capemon.dll"), os.path.join(directory_path, "version.dll"))
         return

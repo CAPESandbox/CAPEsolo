@@ -7,10 +7,11 @@ from ctypes import (
     WINFUNCTYPE,
     Structure,
     Union,
-    c_bool,
     c_char,
     c_double,
     c_int,
+    c_size_t,
+    c_ssize_t,
     c_ubyte,
     c_uint,
     c_ulonglong,
@@ -18,9 +19,9 @@ from ctypes import (
     c_void_p,
     c_wchar_p,
     windll,
-    c_ulong,
     c_long,
 )
+
 
 NTDLL = windll.ntdll
 KERNEL32 = windll.kernel32
@@ -31,6 +32,7 @@ PDH = windll.pdh
 PSAPI = windll.psapi
 
 BYTE = c_ubyte
+BOOL = c_int
 USHORT = c_ushort
 WORD = c_ushort
 DWORD = c_uint
@@ -42,14 +44,19 @@ LPBYTE = POINTER(c_ubyte)
 LPTSTR = POINTER(c_char)
 PWSTR = c_wchar_p
 HANDLE = c_void_p
+HWND = HANDLE
 PVOID = c_void_p
 LPVOID = c_void_p
-UINT_PTR = c_void_p
-ULONG_PTR = c_void_p
-SIZE_T = c_void_p
+LONG_PTR = c_ssize_t
+UINT_PTR = c_size_t
+ULONG_PTR = c_size_t
+SIZE_T = c_size_t
+LPARAM = LONG_PTR
 HMODULE = c_void_p
 PWCHAR = c_wchar_p
 DOUBLE = c_double
+EnumWindowsProc = WINFUNCTYPE(BOOL, HWND, LPARAM)
+EnumChildProc = WINFUNCTYPE(BOOL, HWND, LPARAM)
 
 DEBUG_PROCESS = 0x00000001
 CREATE_NEW_CONSOLE = 0x00000010
@@ -98,6 +105,7 @@ INVALID_HANDLE_VALUE = -1
 ERROR_BROKEN_PIPE = 0x0000006D
 ERROR_MORE_DATA = 0x000000EA
 ERROR_PIPE_CONNECTED = 0x00000217
+ERROR_INVALID_HANDLE = 0x00000006
 
 WAIT_TIMEOUT = 0x00000102
 
@@ -116,8 +124,6 @@ GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 GENERIC_EXECUTE = 0x20000000
 GENERIC_ALL = 0x10000000
-
-OPEN_EXISTING = 0x00000003
 
 TH32CS_SNAPPROCESS = 0x02
 
@@ -138,6 +144,17 @@ TRUNCATE_EXISTING = 5
 CREATE_NO_WINDOW = 0x08000000
 
 MAX_PATH = 260
+
+# Button messages
+BM_SETCHECK = 0x000000F1
+BM_GETCHECK = 0x000000F0
+# Button states
+BST_UNCHECKED = 0x0000
+BST_CHECKED = 0x0001
+BST_INDETERMINATE = 0x0002
+
+# Process cannot access the file because it is being used by another process.
+ERROR_SHARING_VIOLATION = 0x00000020
 
 
 class STARTUPINFO(Structure):
@@ -250,7 +267,6 @@ class SYSTEM_INFO(Structure):
 
 
 class UNICODE_STRING(Structure):
-    _pack_ = 1
     _fields_ = [
         ("Length", USHORT),
         ("MaximumLength", USHORT),
@@ -274,7 +290,7 @@ class SECURITY_ATTRIBUTES(Structure):
     _fields_ = [
         ("nLength", DWORD),
         ("lpSecurityDescriptor", PVOID),
-        ("bInheritHandle", BYTE),
+        ("bInheritHandle", BOOL),
     ]
 
 
@@ -321,7 +337,3 @@ class PROCESS_BASIC_INFORMATION(Structure):
         ("UniqueProcessId", ULONG_PTR),
         ("InheritedFromUniqueProcessId", ULONG_PTR),
     ]
-
-
-EnumWindowsProc = WINFUNCTYPE(c_bool, POINTER(c_int), POINTER(c_int))
-EnumChildProc = WINFUNCTYPE(c_bool, POINTER(c_int), POINTER(c_int))
