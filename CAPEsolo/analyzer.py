@@ -519,19 +519,19 @@ class Analyzer:
                 log.info("Analyzer: Package %s does not specify a %s option", self.package_name, key)
 
         # randomize monitor DLL and loader executable names
-        for source_name, dest_name, default_name in [
-            (MONITOR_DLL, CAPEMON32_NAME, "capemon.dll"),
-            (MONITOR_DLL_64, CAPEMON64_NAME, "capemon_x64.dll"),
-            (LOADER32, LOADER32_NAME, "loader.exe"),
-            (LOADER64, LOADER64_NAME, "loader_x64.exe"),
+        for source_name, dest_name, default_name, source_dir in [
+            (MONITOR_DLL, CAPEMON32_NAME, "capemon.dll", "dll"),
+            (MONITOR_DLL_64, CAPEMON64_NAME, "capemon_x64.dll", "dll"),
+            (LOADER32, LOADER32_NAME, "loader.exe", "bin"),
+            (LOADER64, LOADER64_NAME, "loader_x64.exe", "bin"),
         ]:
             if source_name is not None:
                 if os.path.basename(source_name) != source_name:
                     log.warning("Path traversal attempt detected in source_name: '%s'", source_name)
                     return
-                source_path = os.path.join("dll" if "loader" not in dest_name else "bin", source_name)
+                source_path = os.path.join(source_dir, source_name)
             else:
-                source_path = os.path.join("dll" if "loader" not in dest_name else "bin", default_name)
+                source_path = os.path.join(source_dir, default_name)
             copy(source_path, dest_name)
 
         si = subprocess.STARTUPINFO()

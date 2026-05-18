@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from ctypes import POINTER, byref, c_buffer, c_int, c_ulong, create_string_buffer, sizeof, windll, ArgumentError, Structure, c_ushort, c_void_p, string_at, create_unicode_buffer
+from ctypes.wintypes import BOOL, DWORD, HANDLE
 from pathlib import Path
 from shutil import copy
 
@@ -90,6 +91,7 @@ KERNEL32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
 KERNEL32.OpenThread.restype = HANDLE
 KERNEL32.OpenThread.argtypes = [DWORD, BOOL, DWORD]
 KERNEL32.GetLastError.restype = DWORD
+KERNEL32.CreateFileW.restype = HANDLE
 
 NTDLL.NtQueryInformationProcess.restype = c_int
 NTDLL.NtQueryInformationProcess.argtypes = [c_void_p, c_int, c_void_p, c_ulong, POINTER(c_ulong)]
@@ -256,7 +258,7 @@ class Process:
             self.open()
 
         pbi = create_string_buffer(4096)
-        size = c_int()
+        size = c_ulong()
 
         ret = NTDLL.NtQueryInformationProcess(self.h_process, 27, byref(pbi), sizeof(pbi), byref(size))
         if NT_SUCCESS(ret) and size.value >= sizeof(UNICODE_STRING):
@@ -487,7 +489,7 @@ class Process:
         hFile = KERNEL32.CreateFileW(PATH_KERNEL_DRIVER, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
         if os_is_64bit:
             KERNEL32.Wow64RevertWow64FsRedirection(wow64)
-        if hFile:
+        if hFile and hFile != HANDLE(-1).value:
             p = Process(pid=os.getpid())
             ppid = p.get_parent_pid()
             pid_vboxservice = 0

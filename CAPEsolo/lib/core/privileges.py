@@ -3,7 +3,6 @@
 # See the file 'docs/LICENSE' for copying permission.
 
 from ctypes import POINTER, wintypes
-from ctypes.wintypes import HANDLE
 
 from lib.common.defines import (
     ADVAPI32,
@@ -22,17 +21,9 @@ def grant_debug_privilege(pid=None):
     @param pid: PID.
     @return: operation status.
     """
-    ADVAPI32.OpenProcessToken.argtypes = (
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        POINTER(wintypes.HANDLE),
-    )
+    ADVAPI32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, POINTER(wintypes.HANDLE))
 
-    ADVAPI32.LookupPrivilegeValueW.argtypes = (
-        wintypes.LPWSTR,
-        wintypes.LPWSTR,
-        POINTER(LUID),
-    )
+    ADVAPI32.LookupPrivilegeValueW.argtypes = (wintypes.LPWSTR, wintypes.LPWSTR, POINTER(LUID))
 
     ADVAPI32.AdjustTokenPrivileges.argtypes = (
         wintypes.HANDLE,
@@ -42,8 +33,9 @@ def grant_debug_privilege(pid=None):
         POINTER(TOKEN_PRIVILEGES),
         POINTER(wintypes.DWORD),
     )
-
-    KERNEL32.CloseHandle.argtypes = [HANDLE]
+    KERNEL32.GetCurrentProcess.restype = wintypes.HANDLE
+    KERNEL32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    KERNEL32.OpenProcess.restype = wintypes.HANDLE
 
     if pid is None:
         h_process = KERNEL32.GetCurrentProcess()
@@ -68,9 +60,7 @@ def grant_debug_privilege(pid=None):
     token_privs.PrivilegeCount = 1
     token_privs.Privileges = luid_attributes
 
-    if not ADVAPI32.AdjustTokenPrivileges(
-        h_current_token, False, token_privs, 0, None, None
-    ):
+    if not ADVAPI32.AdjustTokenPrivileges(h_current_token, False, token_privs, 0, None, None):
         return False
 
     KERNEL32.CloseHandle(h_current_token)
