@@ -13,11 +13,12 @@ from CAPEsolo.capelib.cmdconsts import *
 from .patch_dialog import ConfirmPatchDialog, PatchDialog, PatchHistoryDialog
 from .patch_models import PatchEntry
 from .search_dialog import SearchDialog
+from .theme import ACCENT_ERROR, ACCENT_GREEN, ACCENT_ORANGE, BG_INPUT
 
 log = logging.getLogger(__name__)
 
-COLOR_LIGHT_YELLOW = wx.Colour(255, 255, 150)
-COLOR_LIGHT_RED = wx.Colour(255, 102, 102)
+COLOR_LIGHT_YELLOW = ACCENT_ORANGE
+COLOR_LIGHT_RED = ACCENT_ERROR
 MAX_IDLE = 1
 
 DecodedInstruction = namedtuple("DecodedInstruction", ["address", "bytes", "text"])
@@ -164,12 +165,12 @@ class DisassemblyListCtrl(wx.ListCtrl):
     def ClearHighlight(self):
         for i in range(self.GetItemCount()):
             if self.GetItemBackgroundColour(i) != COLOR_LIGHT_RED:
-                self.SetItemBackgroundColour(i, wx.Colour(wx.WHITE))
+                self.SetItemBackgroundColour(i, BG_INPUT)
 
     def HighlightCip(self, row):
         if row >= 0:
             self.ClearHighlight()
-            self.SetItemBackgroundColour(row, wx.Colour(wx.CYAN))
+            self.SetItemBackgroundColour(row, ACCENT_GREEN)
             self.CenterRow(row)
         else:
             log.warning("[DEBUG CONSOLE] Instruction %#x not found in disassembly", self.parent.cip)
@@ -382,7 +383,7 @@ class DisassemblyListCtrl(wx.ListCtrl):
         if row == wx.NOT_FOUND:
             return
 
-        self.SetItemBackgroundColour(row, wx.Colour(wx.WHITE))
+        self.SetItemBackgroundColour(row, BG_INPUT)
         self.Refresh()
 
     def SetBpBackground(self, addr):
@@ -390,7 +391,7 @@ class DisassemblyListCtrl(wx.ListCtrl):
         if row == wx.NOT_FOUND:
             return
 
-        self.SetItemBackgroundColour(row, wx.Colour(COLOR_LIGHT_RED))
+        self.SetItemBackgroundColour(row, COLOR_LIGHT_RED)
         self.Refresh()
 
     def GoToInstruction(self, addr):

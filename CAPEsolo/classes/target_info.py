@@ -3,6 +3,7 @@ import wx.grid as gridlib
 
 from .custom_grid import CopyableGrid
 from .pe_window import PeWindow
+from .theme import GRID_ROW_ALT, apply_theme
 from CAPEsolo.capelib.objects import File
 
 
@@ -36,6 +37,7 @@ class TargetInfoPanel(wx.Panel):
         vbox.Add(self.peButton, proportion=0, flag=wx.LEFT, border=5)
 
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def AddNewRow(self, value0, value1):
         current_row = self.grid.GetNumberRows()
@@ -67,12 +69,11 @@ class TargetInfoPanel(wx.Panel):
 
     def ApplyAlternateRowShading(self):
         numRows = self.grid.GetNumberRows()
-        lightGrey = wx.Colour(240, 240, 240)
 
         for row in range(numRows):
             if row % 2 == 0:
                 attr = gridlib.GridCellAttr()
-                attr.SetBackgroundColour(lightGrey)
+                attr.SetBackgroundColour(GRID_ROW_ALT)
                 self.grid.SetRowAttr(row, attr)
         self.grid.ForceRefresh()
 

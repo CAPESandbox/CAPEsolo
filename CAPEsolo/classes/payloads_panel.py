@@ -7,6 +7,7 @@ import wx.lib.scrolledpanel as scrolled
 from .custom_grid import CopyableGrid
 from .hexview_window import HexViewWindow
 from .pe_window import PeWindow
+from .theme import GRID_ROW_ALT
 from CAPEsolo.capelib.cape_utils import (
     get_cape_name_from_cape_type,
     metadata_processing,
@@ -167,12 +168,11 @@ class PayloadsPanel(wx.Panel):
 
     def ApplyAlternateRowShading(self, grid):
         numRows = grid.GetNumberRows()
-        lightGrey = wx.Colour(240, 240, 240)
 
         for row in range(numRows):
             if row % 2 == 0:
                 attr = gridlib.GridCellAttr()
-                attr.SetBackgroundColour(lightGrey)
+                attr.SetBackgroundColour(GRID_ROW_ALT)
                 grid.SetRowAttr(row, attr)
 
         grid.ForceRefresh()

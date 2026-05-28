@@ -15,6 +15,7 @@ from .strings_panel import StringsPanel
 from .target_info import TargetInfoPanel
 from .yara_panel import YaraPanel
 from .signatures_panel import SignaturesPanel
+from .theme import BG_MAIN, _init as _init_theme, apply_theme
 from CAPEsolo.capelib.path_utils import path_mkdir
 
 
@@ -61,8 +62,14 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_CLOSE, self.OnClose)
 
     def InitUi(self):
+        _init_theme()
         self.panel = wx.Panel(self)
-        self.notebook = wx.Notebook(self.panel)
+        import wx.lib.agw.flatnotebook as fnb
+        self.notebook = fnb.FlatNotebook(
+            self.panel,
+            wx.ID_ANY,
+            style=fnb.FNB_NO_X_BUTTON | fnb.FNB_NODRAG | fnb.FNB_NO_NAV_BUTTONS | fnb.FNB_TABS_BORDER_SIMPLE
+        )
         self.notebook.analysisDir = self.analysisDir
         self.notebook.results = {}
         self.notebook.yara = ProcessYara(self.analysisDir)
@@ -94,6 +101,9 @@ class MainFrame(wx.Frame):
         sizer.Add(self.notebook, 1, wx.EXPAND)
 
         self.panel.SetSizer(sizer)
+        self.SetBackgroundColour(BG_MAIN)
+        self.panel.SetBackgroundColour(BG_MAIN)
+        apply_theme(self)
 
     def OnNotebookPageChanged(self, event):
         newSelection = event.GetSelection()

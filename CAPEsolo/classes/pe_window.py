@@ -9,6 +9,7 @@ import wx.lib.scrolledpanel as scrolled
 from CAPEsolo.capelib.parse_pe import PortableExecutable
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
+from .theme import GRID_ROW_ALT
 
 
 class PeWindow(wx.Frame, KeyEventHandlerMixin):
@@ -409,12 +410,11 @@ class PeWindow(wx.Frame, KeyEventHandlerMixin):
 
     def ApplyAlternateRowShading(self, grid):
         numRows = grid.GetNumberRows()
-        lightGrey = wx.Colour(240, 240, 240)
 
         for row in range(numRows):
             if row % 2 == 0:
                 attr = gridlib.GridCellAttr()
-                attr.SetBackgroundColour(lightGrey)
+                attr.SetBackgroundColour(GRID_ROW_ALT)
                 grid.SetRowAttr(row, attr)
         grid.ForceRefresh()
 

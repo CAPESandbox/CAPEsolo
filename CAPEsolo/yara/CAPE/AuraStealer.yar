@@ -16,3 +16,23 @@ rule AuraStealer
     condition:
         3 of them
 }
+
+rule AuraStealer_OLLVM_64bit
+{
+    meta:
+        author = "enzok"
+        description = "AuraStealer Payload"
+        cape_type = "AuraStealer Payload"
+
+    strings:
+        $aes_key_expansion = { 31 C0 44 8A 04 82 44 88 04 81 44 8A 44 82 01 44 88 44 81 01 }
+        $aes_sbox = { 63 7C 77 7B F2 6B 6F C5 30 01 67 2B FE D7 AB 76 }
+        $anti_dbg_check = { FF 15 ?? ?? ?? ?? 83 F8 01 48 8D }
+        $json_err1 = "invalid string: control character U+0008 (BS) must be escaped" ascii
+        $json_err2 = "attempting to parse an empty input; check that your input string or stream contains the expected JSON" ascii
+        $http_post = "Content-Disposition: form-data; name=\"" ascii
+        $ollvm_xmm_xor = {0F 28 ?? 0F 57 ?? 0F 29 ?? 0F 28 ?? 10 0F 57 ?? 10 0F 29 ?? 10}
+
+    condition:
+        $ollvm_xmm_xor and $aes_key_expansion and $aes_sbox and $anti_dbg_check and 1 of ($json_err*) and $http_post
+}

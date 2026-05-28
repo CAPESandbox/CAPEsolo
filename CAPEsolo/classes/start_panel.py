@@ -20,6 +20,7 @@ from .json_report import GetResults
 from .html_report import ReportHTML
 from .key_event import EVT_ANALYZER_COMPLETE, EVT_ANALYZER_COMPLETE_ID
 from .logger_window import LoggerWindow
+from .theme import apply_theme
 from .timer_window import CountdownTimer
 
 log = logging.getLogger(__name__)
@@ -354,6 +355,7 @@ class StartPanel(wx.Panel):
         vbox.Add(hbox5, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def AddOptionsHelp(self):
         help = [

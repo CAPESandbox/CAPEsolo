@@ -30,6 +30,7 @@ from .debug_controls import (
 from .debug_pipe import CommandPipeHandler
 from .patch_assembler import Assembler
 from .patch_models import PatchEntry
+from .theme import FONT_CODE, apply_theme
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +237,7 @@ class ConsolePanel(wx.Panel):
         # Main Layout
         MAX_BTN_W = 120
         mainSizer = wx.BoxSizer(wx.VERTICAL)
-        fontCourier = wx.Font(10, wx.FONTFAMILY_MODERN, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        fontCourier = FONT_CODE
 
         # Disassembly
         consoleSizer = wx.BoxSizer(wx.VERTICAL)
@@ -367,6 +368,7 @@ class ConsolePanel(wx.Panel):
         mainSizer.Add(inputSizer, 0, wx.EXPAND)
 
         self.SetSizer(mainSizer)
+        apply_theme(self)
 
     def OnRunUntilAccel(self, event):
         row = self.disassemblyConsole.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)

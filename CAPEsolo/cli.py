@@ -23,6 +23,31 @@ from pathlib import Path
 
 import wx
 import wx.adv
+_orig_Button = wx.Button
+import wx.lib.buttons as buttons
+
+def _custom_draw_label(self, dc, width, height, dx=0, dy=0):
+    dc.SetFont(self.GetFont())
+    if self.IsEnabled():
+        dc.SetTextForeground(self.GetForegroundColour())
+    else:
+        bg = self.GetBackgroundColour()
+        if bg.Red() > 80 and bg.Green() < 40:
+            # Destructive warnings (red background) get a soft red-grey disabled text
+            disabled_color = wx.Colour(160, 110, 110)
+        else:
+            # Standard buttons get a highly legible muted slate grey text
+            disabled_color = wx.Colour(139, 148, 158)
+        dc.SetTextForeground(disabled_color)
+    label = self.GetLabel()
+    tw, th = dc.GetTextExtent(label)
+    if not self.up:
+        dx = dy = self.labelDelta
+    dc.DrawText(label, (width-tw)//2+dx, (height-th)//2+dy)
+
+buttons.GenButton.DrawLabel = _custom_draw_label
+wx.Button = buttons.GenButton
+buttons.GenButton.GetDefaultSize = staticmethod(_orig_Button.GetDefaultSize)
 
 CAPESOLO_ROOT = os.path.dirname(__file__)
 sys.path.append(CAPESOLO_ROOT)

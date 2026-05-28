@@ -3,6 +3,7 @@ import logging
 import wx
 
 from .key_event import KeyEventHandlerMixin
+from .theme import FONT_CODE, apply_theme
 
 
 class WxTextCtrlHandler(logging.Handler):
@@ -34,15 +35,13 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
         self.resultsWindow = wx.TextCtrl(
             panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2
         )
-        fontCourier = wx.Font(
-            10, wx.FONTFAMILY_MODERN, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL
-        )
-        self.resultsWindow.SetFont(fontCourier)
+        self.resultsWindow.SetFont(FONT_CODE)
         vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
         copyPathBtn = wx.Button(panel, label="Copy Log")
         copyPathBtn.Bind(wx.EVT_BUTTON, self.OnCopyPath)
         vbox.Add(copyPathBtn, proportion=0, flag=wx.ALL | wx.CENTER, border=5)
         panel.SetSizer(vbox)
+        apply_theme(panel)
 
         fileHandler = logging.FileHandler(self.analysisLogPath)
         wxHandler = WxTextCtrlHandler(self.resultsWindow)

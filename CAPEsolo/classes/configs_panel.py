@@ -6,6 +6,8 @@ from pathlib import Path
 
 import wx
 
+from .theme import FONT_CODE, apply_theme
+
 
 def PrintResults(cfg):
     content = ""
@@ -100,14 +102,12 @@ class ConfigsPanel(wx.Panel):
         self.resultsWindow = wx.TextCtrl(
             self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.EXPAND, size=wx.Size(-1, 100)
         )
-        fontCourier = wx.Font(
-            10, wx.FONTFAMILY_MODERN, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL
-        )
-        self.resultsWindow.SetFont(fontCourier)
+        self.resultsWindow.SetFont(FONT_CODE)
         vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
         content = "Extract after Yara Processing."
         self.resultsWindow.SetValue(content)
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def ExtractConfigs(self, event):
         self.resultsWindow.SetValue("")

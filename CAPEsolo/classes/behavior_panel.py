@@ -9,24 +9,9 @@ from CAPEsolo.capelib.utils import convert_to_printable
 
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
+from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme, BEHAVIOR_CATEGORY_COLORS
 
-BACKGNDCLR = {
-    "filesystem": (255, 227, 197),
-    "registry": (255, 197, 197),
-    "process": (197, 224, 255),
-    "threading": (211, 224, 255),
-    "services": (204, 197, 255),
-    "device": (211, 197, 204),
-    "network": (211, 255, 197),
-    "socket": (211, 255, 197),
-    "synchronization": (249, 197, 255),
-    "browser": (223, 255, 223),
-    "crypto": (240, 242, 197),
-    "system": (255, 252, 197),
-    "hooking": (240, 240, 240),
-    "misc": (200, 200, 200),
-    "all": (255, 255, 255),
-}
+BACKGNDCLR = BEHAVIOR_CATEGORY_COLORS
 
 
 class Options:
@@ -116,9 +101,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         panehBox2 = wx.WrapSizer(wx.HORIZONTAL)
 
-        apiButtonFont = wx.Font(
-            8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL
-        )
+        apiButtonFont = FONT_CODE
 
         for key, rgbColor in BACKGNDCLR.items():
             apiButton = wx.Button(pane, label=key)
@@ -220,6 +203,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         self.SetSizer(vbox)
         vbox.Fit(self)
+        apply_theme(self)
 
     def OnMax(self, event):
         self.items_per_page = self.numcalls
@@ -510,12 +494,11 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
     def ApplyAlternateRowShading(self):
         numRows = self.grid.GetNumberRows()
-        lightGrey = wx.Colour(240, 240, 240)
 
         for row in range(numRows):
             if row % 2 == 0:
                 attr = gridlib.GridCellAttr()
-                attr.SetBackgroundColour(lightGrey)
+                attr.SetBackgroundColour(GRID_ROW_ALT)
                 self.grid.SetRowAttr(row, attr)
         self.grid.ForceRefresh()
 

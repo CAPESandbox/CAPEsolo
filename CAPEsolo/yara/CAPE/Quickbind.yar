@@ -13,6 +13,5 @@ rule Quickbind
         $mutex_api = "CreateMutexW"
         $mutex_error = {FF [1-5] 3D B7 00 00 00}
     condition:
-        //any of them
         3 of ($anti_*) and all of ($mutex_*) and $sleep
 }

@@ -3,6 +3,7 @@ from pathlib import Path
 import wx
 
 from CAPEsolo.capelib.cape_utils import get_cape_name_from_yara_hit
+from .theme import FONT_CODE, apply_theme
 
 
 class YaraPanel(wx.Panel):
@@ -26,13 +27,11 @@ class YaraPanel(wx.Panel):
         self.resultsWindow = wx.TextCtrl(
             self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.EXPAND, size=wx.Size(-1, 100)
         )
-        fontCourier = wx.Font(
-            10, wx.FONTFAMILY_MODERN, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL
-        )
-        self.resultsWindow.SetFont(fontCourier)
+        self.resultsWindow.SetFont(FONT_CODE)
         vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def PrintResults(self):
         yaras = self.yara.yara_results

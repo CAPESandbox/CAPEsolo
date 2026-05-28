@@ -4,6 +4,7 @@ import wx.lib.scrolledpanel as scrolled
 
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
+from .theme import GRID_ROW_ALT, apply_theme
 from CAPEsolo.capelib.signatures import RunSignatures
 
 
@@ -53,6 +54,7 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
         self.SetSizer(vbox)
         vbox.Fit(self)
         vbox.Layout()
+        apply_theme(self)
 
     def onPaneChanged(self, event):
         self.Layout()
@@ -92,11 +94,10 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
 
     def ApplyAlternateRowShading(self):
         numRows = self.grid.GetNumberRows()
-        lightGrey = wx.Colour(240, 240, 240)
 
         for row in range(numRows):
             if row % 2 == 0:
                 attr = gridlib.GridCellAttr()
-                attr.SetBackgroundColour(lightGrey)
+                attr.SetBackgroundColour(GRID_ROW_ALT)
                 self.grid.SetRowAttr(row, attr)
         self.grid.ForceRefresh()

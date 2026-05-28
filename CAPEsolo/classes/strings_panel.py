@@ -5,6 +5,7 @@ import wx
 
 from CAPEsolo.capelib.utils import LoadFilesJson, extract_strings
 from .key_event import KeyEventHandlerMixin
+from .theme import FONT_CODE, apply_theme
 
 
 class StringsPanel(wx.Panel, KeyEventHandlerMixin):
@@ -28,10 +29,11 @@ class StringsPanel(wx.Panel, KeyEventHandlerMixin):
         vbox.Add(hbox, flag=wx.EXPAND | wx.ALL, border=10)
 
         self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
-        self.resultsWindow.SetFont(wx.Font(10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.resultsWindow.SetFont(FONT_CODE)
         vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def PopulateFileDropdown(self):
         self.targetFile = self.parent.targetFile

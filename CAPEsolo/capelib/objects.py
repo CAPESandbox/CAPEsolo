@@ -82,7 +82,7 @@ class File:
         sha256 = hashlib.sha256()
         sha512 = hashlib.sha512()
         sha3_384 = hashlib.sha3_384()
-        tlsh_hash = tlsh.Tlsh()
+        tlsh_data = bytearray()
 
         for chunk in self.get_chunks():
             crc = binascii.crc32(chunk, crc)
@@ -91,7 +91,7 @@ class File:
             sha256.update(chunk)
             sha512.update(chunk)
             sha3_384.update(chunk)
-            tlsh_hash.update(chunk)
+            tlsh_data += chunk
 
         self._crc32 = "".join(f"{(crc >> i) & 0xFF:02X}" for i in (24, 16, 8, 0))
         self._md5 = md5.hexdigest()
@@ -99,9 +99,10 @@ class File:
         self._sha256 = sha256.hexdigest()
         self._sha512 = sha512.hexdigest()
         self._sha3_384 = sha3_384.hexdigest()
-        with contextlib.suppress(ValueError):
-            tlsh_hash.final()
-            self._tlsh_hash = tlsh_hash.hexdigest()
+        with contextlib.suppress(Exception):
+            result = tlsh.hash(bytes(tlsh_data))
+            if result:
+                self._tlsh_hash = result
 
     @property
     def file_data(self):

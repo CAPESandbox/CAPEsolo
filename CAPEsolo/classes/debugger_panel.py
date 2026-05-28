@@ -4,6 +4,7 @@ from pathlib import Path
 import wx
 
 from .key_event import KeyEventHandlerMixin
+from .theme import FONT_CODE, apply_theme
 
 
 class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
@@ -31,11 +32,7 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
         self.resultsWindow = wx.TextCtrl(
             self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2
         )
-        self.resultsWindow.SetFont(
-            wx.Font(
-                10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL
-            )
-        )
+        self.resultsWindow.SetFont(FONT_CODE)
         vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
         hboxCover = wx.BoxSizer(wx.HORIZONTAL)
@@ -51,6 +48,7 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
         vbox.Add(hboxCover, proportion=0, flag=wx.ALL | wx.CENTER, border=5)
 
         self.SetSizer(vbox)
+        apply_theme(self)
 
     def PopulateLogFileDropdown(self):
         path = Path(self.analysisDir, "debugger")
