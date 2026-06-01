@@ -892,7 +892,7 @@ class StartPanel(wx.Panel):
                 wx.MessageBox("No YARA rules were updated.", "Update Complete", wx.OK | wx.ICON_INFORMATION)
 
         except Exception as e:
-            del busy
+            del busy  # noqa: F821
             wx.MessageBox(f"Failed to update YARA rules:\n{str(e)}", "Error", wx.OK | wx.ICON_ERROR)
 
     def OnYaraSave(self, event):
@@ -972,7 +972,7 @@ class StartPanel(wx.Panel):
                 wx.MessageBox(f"JSON report was unsuccessful: {msg}", "JSON Report", wx.OK | wx.ICON_INFORMATION)
 
         except Exception as e:
-            del busy
+            del busy  # noqa: F821
             wx.MessageBox(f"Failed to create JSON report:\n{str(e)}", "Error", wx.OK | wx.ICON_ERROR)
 
     def HtmlReport(self, event):
@@ -999,5 +999,5 @@ class StartPanel(wx.Panel):
                 wx.MessageBox(f"HTML report was unsuccessful: {msg}", "HTML Report", wx.OK | wx.ICON_INFORMATION)
 
         except Exception as e:
-            del busy
+            del busy  # noqa: F821
             wx.MessageBox(f"Failed to create HTML report:\n{str(e)}", "Error", wx.OK | wx.ICON_ERROR)
