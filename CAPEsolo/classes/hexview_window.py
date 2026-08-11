@@ -59,6 +59,11 @@ class HexViewWindow(wx.Frame, KeyEventHandlerMixin):
         self.CreatePaginationControls()
         self.LoadPage()
         self.panel.SetSizer(self.vbox)
+        # Size to the wider of the hex dump and the bottom control row (7 buttons, a page
+        # input, two dropdowns and Disassemble), so the pagination bar is never cut off. The
+        # margin covers the frame border and the vertical scrollbar.
+        width = max(self.hexWidth, self.paginationSizer.GetMinSize().width + 60)
+        self.SetSize(width, self.mainWindowSize.y)
         # Offset a copy: the caller reuses the wx.Point it passed in, so mutating it here
         # would silently move whatever it positions next.
         position = wx.Point(self.mainWindowPosition)
@@ -141,7 +146,9 @@ class HexViewWindow(wx.Frame, KeyEventHandlerMixin):
         dc.SetFont(font)
         textWidth, _ = dc.GetTextExtent("0" * LINE_WIDTH)
 
-        self.SetSize(textWidth + 80, self.mainWindowSize.y)
+        # Width the hex dump wants; the final window width (set in InitUI) is the wider of
+        # this and the bottom control row, so neither is cut off.
+        self.hexWidth = textWidth + 80
         self.vbox.Add(self.resultsWindow, 1, wx.EXPAND | wx.ALL, 10)
 
     def CreatePaginationControls(self):
