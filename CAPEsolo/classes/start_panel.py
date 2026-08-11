@@ -1005,7 +1005,9 @@ class StartPanel(wx.Panel):
             mainFrame = self.GetMainFrame()
             size = mainFrame.GetSize()
             position = mainFrame.GetPosition()
-            loggerWindow = LoggerWindow(self, "Analysis Log", position, size)
+            loggerWindow = LoggerWindow(
+                self, "Analysis Log", position, size, maximized=mainFrame.IsMaximized()
+            )
             loggerWindow.Show()
             self.StartAnalysis()
 

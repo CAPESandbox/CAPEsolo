@@ -1,6 +1,6 @@
 [project]
 name = "CAPEsolo"
-version = "0.5.27"
+version = "0.5.28"
 description = "Standalone CAPEMON"
 authors = [{name = "enzok", email = "<7831008+enzok@users.noreply.github.com>"}]
 readme = "README.md"

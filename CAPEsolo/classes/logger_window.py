@@ -18,7 +18,7 @@ class WxTextCtrlHandler(logging.Handler):
 
 class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
     def __init__(
-        self, parent, title, mainWindowPosition, mainWindowSize, *args, **kwargs
+        self, parent, title, mainWindowPosition, mainWindowSize, maximized=False, *args, **kwargs
     ):
         super(LoggerWindow, self).__init__(parent, title=title, *args, **kwargs)
         self.analysisDir = parent.analysisDir
@@ -26,6 +26,7 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
         self.BindKeyEvents()
         self.mainWindowPosition = mainWindowPosition
         self.mainWindowSize = mainWindowSize
+        self.maximized = maximized
         self.InitUI()
 
     def InitUI(self):
@@ -53,15 +54,21 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
             format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         )
 
-        # Offset a copy rather than the caller's wx.Point: the caller reuses the object it
-        # passed in, so mutating it here would silently move whatever it positions next.
-        position = wx.Point(self.mainWindowPosition)
-        position.x += self.mainWindowSize.x
-        screenWidth, _ = wx.DisplaySize()
-        self.SetSize(
-            int(screenWidth * 0.98 - self.mainWindowSize.x), self.mainWindowSize.y
-        )
-        self.SetPosition(position)
+        # When the main frame is maximized it fills the screen, so the docked-beside
+        # geometry below would push this window off-screen with ~zero width; maximize
+        # over the start panel instead.
+        if self.maximized:
+            self.Maximize()
+        else:
+            # Offset a copy rather than the caller's wx.Point: the caller reuses the object it
+            # passed in, so mutating it here would silently move whatever it positions next.
+            position = wx.Point(self.mainWindowPosition)
+            position.x += self.mainWindowSize.x
+            screenWidth, _ = wx.DisplaySize()
+            self.SetSize(
+                int(screenWidth * 0.98 - self.mainWindowSize.x), self.mainWindowSize.y
+            )
+            self.SetPosition(position)
 
     def OnCopyPath(self, event):
         if wx.TheClipboard.Open():

@@ -26,13 +26,6 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
   and survive `pip install --upgrade CAPEsolo`, which overwrites the packaged copy.
 * Only include the keys you want to change; the rest fall back to the packaged defaults.
 
-GUI theme
-* Dark by default. For light, add to C:\Users\Public\CAPEsolo\cfg.ini and restart CAPEsolo:
-```ini
-[gui]
-theme = light
-```
-
 Revert the VM after each analysis.
 
 MCP Server
