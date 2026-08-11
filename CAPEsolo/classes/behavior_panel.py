@@ -274,6 +274,10 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         for category in categories:
             if "processes" not in category:
                 self.categoryDropdown.Append(category)
+        # Pre-select and show the process tree by default when it is available.
+        if "processtree" in categories:
+            self.categoryDropdown.SetStringSelection("processtree")
+            self.OnCatView(None)
 
     def OnCatView(self, event):
         selectedCategory = self.categoryDropdown.GetValue()

@@ -464,6 +464,13 @@ def _style_widget(w):
         w.SetFont(FONT_CODE)
         return
 
+    # --- TreeCtrl (process tree window) ---
+    if isinstance(w, wx.TreeCtrl):
+        w.SetBackgroundColour(BG_INPUT)
+        w.SetForegroundColour(FG_PRIMARY)
+        w.SetFont(FONT_UI)
+        return
+
     # --- Buttons (Support both wx.Button and generic GenButton) ---
     import wx.lib.buttons as buttons
     if isinstance(w, (wx.Button, buttons.GenButton)):

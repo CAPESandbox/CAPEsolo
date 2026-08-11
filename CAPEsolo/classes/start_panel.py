@@ -23,6 +23,7 @@ from .json_report import GetResults
 from .html_report import ReportHTML
 from .key_event import EVT_ANALYZER_COMPLETE, EVT_ANALYZER_COMPLETE_ID
 from .logger_window import LoggerWindow
+from .process_tree_window import ProcessTreeWindow
 from .theme import apply_theme
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class StartPanel(scrolled.ScrolledPanel):
         self.parent.targetFile = self.targetFile
         self.idbg = False
         self.dbgConsole = None
+        self.processTreeWindow = None
         self.InitUi()
         self.LoadAnalysisConfFile()
         self.Bind(EVT_ANALYZER_COMPLETE, self.OnAnalyzerComplete)
@@ -1061,6 +1063,10 @@ class StartPanel(scrolled.ScrolledPanel):
                 self, "Analysis Log", position, size, maximized=mainFrame.IsMaximized()
             )
             loggerWindow.Show()
+            if self.processTreeWindow:
+                self.processTreeWindow.Close()
+            self.processTreeWindow = ProcessTreeWindow(self, "Process Tree", position)
+            self.processTreeWindow.Show()
             self.StartAnalysis()
 
         except Exception as e:
