@@ -65,7 +65,10 @@ class ProcessTreeWindow(wx.Frame):
         item = self.tree.AppendItem(parentItem, f"{name} ({pid})")
         self.tree.SetItemData(item, path)
         self.nodes[pid] = item
-        self.tree.Expand(parentItem)
+        # The root is hidden (TR_HIDE_ROOT); expanding it raises "Can't expand hidden root".
+        # Its children are the top-level rows and are always visible, so only expand real nodes.
+        if parentItem != self.root:
+            self.tree.Expand(parentItem)
         for cpid in self.pending.pop(pid, []):     # adopt orphans that arrived before us
             # Only move a leaf: Delete() would destroy an orphan's own subtree and leave
             # its descendants' TreeItemIds dangling (-> crash on the next AppendItem). An
@@ -83,7 +86,8 @@ class ProcessTreeWindow(wx.Frame):
         new = self.tree.AppendItem(newParentItem, label)
         self.tree.SetItemData(new, data)
         self.nodes[pid] = new
-        self.tree.Expand(newParentItem)
+        if newParentItem != self.root:
+            self.tree.Expand(newParentItem)
 
     def OnItemTooltip(self, event):
         data = self.tree.GetItemData(event.GetItem())

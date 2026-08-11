@@ -237,6 +237,14 @@ class StartPanel(scrolled.ScrolledPanel):
         self.free.Bind(wx.EVT_CHECKBOX, self.OnFreeChecked)
         hboxHooking.Add(self.free, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
 
+        self.unhookOnExit = wx.CheckBox(self, label="Unhook on exit")
+        self.unhookOnExit.SetToolTip(
+            "Restore hooked APIs (uninject the monitor) in surviving processes when the "
+            "analysis ends, so the machine stays responsive."
+        )
+        self.unhookOnExit.SetValue(True)
+        hboxHooking.Add(self.unhookOnExit, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+
         # Monitor logging switches. Laid out as a fixed two-row grid rather than a
         # WrapSizer: wrapping gave no vertical gap between the lines it created (so they
         # collided), stretched whichever control landed last on a line, and left the level
@@ -971,6 +979,8 @@ class StartPanel(scrolled.ScrolledPanel):
         if self.free.GetValue():
             userOptions += f"{sep}free=1"
             sep = ","
+        userOptions += f"{sep}unhook-on-terminate={1 if self.unhookOnExit.GetValue() else 0}"
+        sep = ","
         for box, name, level in self.loggingOptions:
             if box.GetValue():
                 # Levelled options take the number leading their selected label; the

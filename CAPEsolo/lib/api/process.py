@@ -730,6 +730,12 @@ class Process:
             config.write(f"file-of-interest={interest}\n")
             config.write(f"shutdown-mutex={SHUTDOWN_MUTEX}\n")
             config.write(f"terminate-event={TERMINATE_EVENT}{self.pid}\n")
+            # Tell capemon to restore hooked APIs (uninject) when its terminate-event fires at
+            # analysis end, so surviving processes (explorer/system) are left responsive. The
+            # Start panel's "Unhook on exit" checkbox sets this via options; default on here for
+            # any path that does not.
+            if "unhook-on-terminate" not in self.options:
+                config.write("unhook-on-terminate=1\n")
 
             if nosleepskip or (
                 "force-sleepskip" not in self.options and len(interest) > 2 and interest[:2] != "\\:" and Process.process_num <= 2
