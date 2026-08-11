@@ -86,6 +86,14 @@ class CapesoloApp(wx.App):
         frameY = int(screenHeight * 0.02)
         frame.SetPosition(wx.Point(frameX, frameY))
         frame.Show()
+        # The Start panel scrolls vertically only, so a too-narrow frame clips its widest
+        # always-visible row (the bottom action bar) rather than scrolling. Widen the frame if
+        # the initial width does not give the Start panel's content its full width.
+        startTab = frame.startTab
+        chrome = frame.GetSize().width - startTab.GetClientSize().width
+        needed = min(startTab.GetSizer().GetMinSize().width + chrome, screenWidth)
+        if frame.GetSize().width < needed:
+            frame.SetSize(wx.Size(needed, frameHeight))
         return True
 
 
