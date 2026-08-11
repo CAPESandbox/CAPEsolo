@@ -114,16 +114,20 @@ class SearchDialog(wx.Dialog):
     def ControlPos(self, index):
         """Map an index into GetValue() to a position the control understands.
 
-        GetValue() returns "\\n"-separated text while a plain TE_MULTILINE control counts
-        "\\r\\n", so a raw string index lands one character early per preceding line and
-        highlights the wrong text. TE_RICH2 controls happen to agree, but the panels do not
-        all use it.
+        GetValue() returns "\\n"-separated text; a plain TE_MULTILINE control stores "\\r\\n"
+        (two chars per line break) while TE_RICH2 stores one, so a raw string index lands one
+        character early per preceding line on the former and highlights the wrong text.
+
+        Detect which by comparing the control's own length (GetLastPosition) with the "\\n"
+        text length, then add one position per preceding line break for "\\r\\n" controls.
+        This deliberately avoids XYToPosition: its line coordinates count word-wrapped display
+        lines (EM_LINEINDEX), so once any line wraps the mapping drifts further the lower the
+        match is - which broke Find Next in every wrapping panel.
         """
         content = self.resultsWindow.GetValue()
-        line = content.count("\n", 0, index)
-        col = index - (content.rfind("\n", 0, index) + 1)
-        pos = self.resultsWindow.XYToPosition(col, line)
-        return index if pos < 0 else pos
+        if self.resultsWindow.GetLastPosition() <= len(content):
+            return index  # one char per line break (TE_RICH2): indices already agree
+        return index + content.count("\n", 0, index)
 
     def HighlightText(self):
         if self.lastFoundPos != -1:
