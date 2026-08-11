@@ -407,6 +407,10 @@ class StartPanel(scrolled.ScrolledPanel):
         self.staticAnalysis = wx.CheckBox(self, label="Static analysis")
         self.staticAnalysis.SetToolTip("Check this box to enable static code analysis.")
 
+        self.autoProcess = wx.CheckBox(self, label="Auto-process")
+        self.autoProcess.SetToolTip("Automatically process and populate the result tabs when a run completes.")
+        self.autoProcess.SetValue(True)
+
         self.jsonReportBtn = wx.Button(self, label="JSON Report")
         self.jsonReportBtn.Disable()
         self.jsonReportBtn.Bind(wx.EVT_BUTTON, self.JsonReport)
@@ -426,6 +430,7 @@ class StartPanel(scrolled.ScrolledPanel):
         hbox5.Add(self.launchAnalyzerBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox5.AddSpacer(10)
         hbox5.Add(self.staticAnalysis, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
+        hbox5.Add(self.autoProcess, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
 
         hbox5.AddStretchSpacer(1)
         hbox5.Add(self.jsonReportBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
@@ -687,7 +692,45 @@ class StartPanel(scrolled.ScrolledPanel):
             self.htmlReportBtn.Enable()
         except Exception:
             self.log(traceback.format_exc())
+
+        if self.autoProcess.GetValue():
+            self.AutoProcessTabs()
         return True
+
+    def AutoProcessTabs(self):
+        """Populate the result tabs in dependency order after a run so the user need not
+        open each tab and click its process button. Only called when Auto-process is
+        checked; the handlers it calls each disable their own button and set a completion
+        flag, so those buttons stay disabled once processed. When Auto-process is unchecked
+        this is skipped and the buttons enable as before for manual processing.
+        """
+        mainFrame = self.GetMainFrame()
+        statusBar = mainFrame.statusBar
+        with wx.BusyCursor():
+            self._AutoStep(statusBar, "info", mainFrame.infoTab.LoadAndDisplayContent)
+
+            logsDir = Path(self.analysisDir) / "logs"
+            if logsDir.exists() and any(logsDir.iterdir()) and not mainFrame.behaviorTab.behaviorComplete:
+                self._AutoStep(statusBar, "behavior", lambda: mainFrame.behaviorTab.GenerateBehavior(None))
+
+            self._AutoStep(statusBar, "payloads", mainFrame.payloadsTab.PayloadsReady)
+
+            if self.targetFile and not mainFrame.yaraTab.yaraComplete:
+                self._AutoStep(statusBar, "yara", lambda: mainFrame.yaraTab.ProcessYara(None))
+
+            if self.parent.configHits:
+                self._AutoStep(statusBar, "configs", lambda: mainFrame.configsTab.ExtractConfigs(None))
+
+            if self.parent.results and not mainFrame.signaturesTab.signaturesComplete:
+                self._AutoStep(statusBar, "signatures", lambda: mainFrame.signaturesTab.GenerateSignatures(None))
+        statusBar.SetMessage("Analysis complete - tabs processed")
+
+    def _AutoStep(self, statusBar, label, fn):
+        statusBar.SetMessage(f"Processing {label}...")
+        try:
+            fn()
+        except Exception:
+            log.exception("Auto-process: failed to process %s", label)
 
     def PendingUploads(self, folders):
         """Destination paths the end-of-run uploads are expected to produce."""

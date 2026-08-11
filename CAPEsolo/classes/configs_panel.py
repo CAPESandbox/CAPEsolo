@@ -239,6 +239,7 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
     def __init__(self, parent):
         super(ConfigsPanel, self).__init__(parent)
         self.configHits = parent.configHits
+        self.configsComplete = False
         self.analysisDir = parent.analysisDir
         self.capesoloRoot = parent.capesoloRoot
         # One entry per grid row, each keeping the value it was flattened from so the detail
@@ -297,6 +298,8 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         self.AddTableData(entries)
         if newPayloads:
             self.UpdatePayloadPanels(newPayloads)
+        self.configsButton.Disable()
+        self.configsComplete = True
 
     def ClearGrid(self):
         self.grid.ClearGrid()
@@ -426,7 +429,7 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         return parent
 
     def UpdateConfigsButtonState(self):
-        if self.configHits:
+        if self.configHits and not self.configsComplete:
             self.configsButton.Enable()
         else:
             self.configsButton.Disable()

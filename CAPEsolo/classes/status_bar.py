@@ -79,6 +79,12 @@ class AnalysisStatusBar(wx.Panel):
         self.state = text
         self.Refresh()
 
+    def SetMessage(self, text):
+        """Show *text* on the status line immediately (used to report auto-processing progress)."""
+        self.state = text
+        self.Refresh()
+        self.Update()
+
     def Reset(self):
         self.timer.Stop()
         self.running = False
