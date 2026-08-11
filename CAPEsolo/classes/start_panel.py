@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Thread
 
 import wx
+import wx.lib.scrolledpanel as scrolled
 from sflock.abstracts import File as SflockFile
 from sflock.ident import identify as sflock_identify
 
@@ -109,7 +110,7 @@ class AnalyzerCompleteEvent(wx.PyCommandEvent):
         self.message = message
 
 
-class StartPanel(wx.Panel):
+class StartPanel(scrolled.ScrolledPanel):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
@@ -456,6 +457,9 @@ class StartPanel(wx.Panel):
         vbox.Add(hbox5, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         self.SetSizer(vbox)
+        # Vertical-only scrolling so the config sections stay reachable when the panel is
+        # shorter than its content; horizontal fitting is handled by GrowFrameToFitContent.
+        self.SetupScrolling(scroll_x=False, scroll_y=True)
         apply_theme(self)
 
     def AddOptionsHelp(self):
@@ -579,6 +583,11 @@ class StartPanel(wx.Panel):
     def OnCollapsiblePaneChanged(self, event):
         self.Layout()
         self.GrowFrameToFitContent()
+        # Refresh the scroll range now the content height has changed. Guarded because this
+        # handler is also fired from InitUi (line ~315) before SetSizer, where there is no
+        # sizer to measure yet.
+        if self.GetSizer() is not None:
+            self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
         if event:
             event.Skip()
 
