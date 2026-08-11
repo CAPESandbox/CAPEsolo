@@ -59,7 +59,6 @@ class MainFrame(wx.Frame):
         kwargs["title"] = f"Capesolo - v{self.version}"
         super(MainFrame, self).__init__(*args, **kwargs)
         self.SetAppIcon()
-        self.logger_window = None
         self.GetConfig()
         self.CreateAnalysisDirectory()
         self.InitUi()
