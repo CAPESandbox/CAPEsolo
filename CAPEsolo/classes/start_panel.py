@@ -465,8 +465,14 @@ class StartPanel(scrolled.ScrolledPanel):
 
         self.SetSizer(vbox)
         # Vertical-only scrolling so the config sections stay reachable when the panel is
-        # shorter than its content; horizontal fitting is handled by GrowFrameToFitContent.
+        # shorter than its content. SetupScrolling initialises the ScrolledPanel (scroll rate,
+        # child-focus scroll), but its FitInside() sets the virtual size from the sizer's min
+        # in BOTH axes - that pinned the virtual width to an oversized min (breaking the
+        # horizontal fit GrowFrameToFitContent relies on) and left the virtual height below the
+        # client height (an unpainted band that ghosted the bottom-row checkboxes). OnPanelSize
+        # corrects the virtual size on every resize.
         self.SetupScrolling(scroll_x=False, scroll_y=True)
+        self.Bind(wx.EVT_SIZE, self.OnPanelSize)
         apply_theme(self)
 
     def AddOptionsHelp(self):
@@ -590,13 +596,34 @@ class StartPanel(scrolled.ScrolledPanel):
     def OnCollapsiblePaneChanged(self, event):
         self.Layout()
         self.GrowFrameToFitContent()
-        # Refresh the scroll range now the content height has changed. Guarded because this
-        # handler is also fired from InitUi (line ~315) before SetSizer, where there is no
-        # sizer to measure yet.
+        # Content height changed, so recompute the scroll range. Guarded because this handler
+        # is also fired from InitUi (line ~315) before SetSizer, where there is no sizer yet.
         if self.GetSizer() is not None:
-            self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
+            self._UpdateVirtualSize()
+            self.Layout()
+            self.Refresh()
         if event:
             event.Skip()
+
+    def OnPanelSize(self, event):
+        self._UpdateVirtualSize()
+        event.Skip()
+
+    def _UpdateVirtualSize(self):
+        # Vertical-only scroll: pin the virtual width to the client width so children fill the
+        # visible width (EXPAND) and horizontal growth stays with the frame (no horizontal
+        # scrollbar). Keep the virtual height at least the client height so there is never an
+        # unpainted band below the content - that band ghosted the bottom-row checkboxes.
+        sizer = self.GetSizer()
+        if sizer is None:
+            return
+        client = self.GetClientSize()
+        minHeight = sizer.GetMinSize().height
+        target = wx.Size(client.width, max(minHeight, client.height))
+        # Only set when it actually changes: toggling a vertical scrollbar changes the client
+        # width and re-fires EVT_SIZE, so an unconditional set could churn.
+        if self.GetVirtualSize() != target:
+            self.SetVirtualSize(target)
 
     def GrowFrameToFitContent(self):
         """Widen the frame when an expanded pane needs more room than the window has.
