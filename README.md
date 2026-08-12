@@ -28,6 +28,31 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
 
 Revert the VM after each analysis.
 
+Download Samples by Hash
+* The Start panel can fetch a sample by MD5/SHA1/SHA256 from VirusTotal or MalwareBazaar and
+  use it as the analysis target. The source is auto-selected (VirusTotal first, then
+  MalwareBazaar; MalwareBazaar requires a SHA256), based on which keys are configured.
+* Turn it on in `cfg.ini` (or via the Settings button): under `[download]` set `enabled = true`.
+  `directory` sets where samples are saved (defaults to the user's Desktop).
+* API keys - where to get them:
+  * VirusTotal: file downloads require a VirusTotal Enterprise / Intelligence API key. The free
+    community key can look up reports but cannot download files.
+  * MalwareBazaar: a free abuse.ch Auth-Key (create an account at auth.abuse.ch).
+* API keys are stored ENCRYPTED, never in plaintext on the VM. You produce the encrypted blob
+  OFF the VM with `tools/encrypt_api_key.py` and paste it into `cfg.ini`.
+* `tools/encrypt_api_key.py` ships in the CAPEsolo source repository under `tools/`. Run it on
+  a trusted host (NOT the analysis VM); it only needs `pip install cryptography`.
+  * `python tools/encrypt_api_key.py`
+  * It prompts (hidden) for the API key and a password, and prints an encrypted blob.
+  * Encrypt every provider you use with the SAME password, so one prompt unlocks both.
+* Install the blob in the guest by either:
+  * pasting it into `cfg.ini` as `api_key_enc` under `[virustotal]` and/or `[malwarebazaar]`, or
+  * setting the `CAPESOLO_VT_APIKEY_ENC` / `CAPESOLO_MB_APIKEY_ENC` environment variables
+    (env vars override `cfg.ini`).
+* When downloads are enabled, CAPEsolo prompts once at startup for the password and decrypts the
+  key in memory only; the plaintext key never touches the VM's disk. Enter the password, then
+  snapshot the VM so it is ready on every revert.
+
 MCP Server
 * CAPEsolo includes an MCP server entrypoint for programmatic analysis workflows.
 * Start it over stdio with `CAPEsolo-mcp`, or serve it over HTTP to reach it from the host.

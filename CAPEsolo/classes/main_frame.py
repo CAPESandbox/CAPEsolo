@@ -112,10 +112,14 @@ class MainFrame(wx.Frame):
         # the theme toggle sits beside it rather than as a child of it.
         bottom = wx.BoxSizer(wx.HORIZONTAL)
         self.statusBar = AnalysisStatusBar(self.panel)
+        self.settingsButton = wx.Button(self.panel, label="Settings", style=wx.BU_EXACTFIT)
+        self.settingsButton.SetToolTip("Edit CAPEsolo settings (cfg.ini)")
+        self.settingsButton.Bind(wx.EVT_BUTTON, self.OnSettings)
         self.themeButton = wx.Button(self.panel, label=self.ThemeLabel(), style=wx.BU_EXACTFIT)
         self.themeButton.SetToolTip("Switch between the light and dark palettes")
         self.themeButton.Bind(wx.EVT_BUTTON, self.OnToggleTheme)
         bottom.Add(self.statusBar, 1, wx.EXPAND)
+        bottom.Add(self.settingsButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
         bottom.Add(self.themeButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
         sizer.Add(bottom, 0, wx.EXPAND)
 
@@ -149,6 +153,13 @@ class MainFrame(wx.Frame):
 
     def OnToggleTheme(self, event):
         self.RefreshTheme()
+
+    def OnSettings(self, event):
+        from .settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(self)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def RefreshTheme(self):
         """Switch palette and restyle everything already on screen."""

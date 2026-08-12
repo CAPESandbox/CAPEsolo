@@ -97,9 +97,27 @@ class CapesoloApp(wx.App):
         return True
 
 
+def _seed_user_config():
+    """Copy the packaged cfg.ini to the user (public) config path if it isn't there yet, so the
+    user has an editable copy. Best-effort: a missing user file is fine (config_paths skips it)."""
+    import shutil
+
+    from CAPEsolo.capelib.config_paths import packaged_config_path, user_config_path
+
+    user = user_config_path()
+    if user.exists():
+        return
+    try:
+        user.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(packaged_config_path()), str(user))
+    except OSError:
+        pass
+
+
 def main():
     mutex = acquire_lock()
     try:
+        _seed_user_config()
         parser = argparse.ArgumentParser(description="Capesolo utility functions.")
         parser.add_argument(
             "--update_yara",
