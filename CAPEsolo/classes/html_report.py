@@ -64,9 +64,19 @@ class ReportHTML:
                 "proctreetolist": proctreetolist,
             }
         )
+        # Only surface the Network tab when the summary actually has content; results["network"]
+        # is always a dict of (possibly empty) lists, so check for real activity.
+        network = results.get("network") or {}
+        has_network = any(
+            network.get(key)
+            for key in ("hosts", "domains", "dns", "http", "tcp", "udp", "tls", "smtp", "icmp", "irc")
+        )
+
         try:
             tpl = env.get_template("report.html")
-            html = tpl.render(results=results, summary_report=False, debugger=debugger)
+            html = tpl.render(
+                results=results, summary_report=False, debugger=debugger, has_network=has_network
+            )
         except UndefinedError as e:
             return False, e
         except TemplateNotFound as e:

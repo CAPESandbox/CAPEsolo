@@ -39,6 +39,12 @@
             <a class="nav-link" id="payloads-tab" data-bs-toggle="tab" href="#payloads" role="tab" aria-controls="payloads"
                aria-selected="false">Payloads</a>
         </li>
+        {% if has_network %}
+        <li class="nav-item">
+            <a class="nav-link" id="network-tab" data-bs-toggle="tab" href="#network" role="tab" aria-controls="network"
+               aria-selected="false">Network</a>
+        </li>
+        {% endif %}
         {% if debugger %}
         <li class="nav-item">
             <a class="nav-link" id="debugger-tab" data-bs-toggle="tab" href="#debugger" role="tab" aria-controls="debugger"
