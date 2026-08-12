@@ -28,6 +28,15 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
 
 Revert the VM after each analysis.
 
+Preserve Results From an Unstable VM
+* If a sample makes the VM unusable after detonation, click **Zip Results** on the Start panel to
+  archive the whole analysis directory to `Desktop\capesolo_analysis_<timestamp>.zip`.
+* To restore into a clean/reverted VM, copy that zip to `C:\Users\Public\CAPEsolo\restore.zip`,
+  then start CAPEsolo. On startup it extracts the zip into the analysis directory (only when that
+  directory has no analysis yet) and renames it `restore.zip.done` so it restores once.
+* The result tabs then read the restored artifacts with no re-run - process each tab (Behavior,
+  Yara, Configs, Signatures) or use the JSON/HTML Report buttons.
+
 Download Samples by Hash
 * The Start panel can fetch a sample by MD5/SHA1/SHA256 from VirusTotal or MalwareBazaar and
   use it as the analysis target. The source is auto-selected (VirusTotal first, then

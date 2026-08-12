@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import time
+from contextlib import suppress
 from ctypes import windll
 from pathlib import Path
 
@@ -112,6 +113,40 @@ def _seed_user_config():
         shutil.copy(str(packaged_config_path()), str(user))
     except OSError:
         pass
+
+
+def _restore_results():
+    """Restore a preserved analysis into a clean/reverted VM: if a results zip has been dropped at
+    %PUBLIC%\\CAPEsolo\\restore.zip and the analysis directory has no analysis yet, extract it so the
+    tabs read it on startup. Renamed to restore.zip.done afterwards so it restores once. Best-effort
+    - a bad zip or read-only dir must never block startup."""
+    import configparser
+    import zipfile
+
+    from CAPEsolo.capelib.config_paths import config_paths, user_config_path
+
+    restore_zip = user_config_path().parent / "restore.zip"
+    if not restore_zip.is_file():
+        return
+
+    config = configparser.ConfigParser()
+    with suppress(configparser.Error, OSError):
+        config.read([str(p) for p in config_paths()])
+    analysis_dir = Path(
+        config.get("analysis_directory", "analysis", fallback=r"C:\Users\Public\CAPEsolo\analysis")
+    )
+    # Never clobber an existing analysis.
+    if any(analysis_dir.glob("s_*")):
+        return
+
+    try:
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(str(restore_zip)) as archive:
+            archive.extractall(str(analysis_dir))
+    except Exception:
+        return
+    with suppress(OSError):
+        restore_zip.rename(restore_zip.with_suffix(".zip.done"))
 
 
 def main():
@@ -241,6 +276,9 @@ def main():
 
             return 0
 
+        # GUI-only (headless/update-yara returned above): restore a preserved analysis before the
+        # frame reads the analysis directory.
+        _restore_results()
         app = CapesoloApp()
         app.MainLoop()
         return 0

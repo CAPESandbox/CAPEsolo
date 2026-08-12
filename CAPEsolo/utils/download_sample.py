@@ -88,9 +88,9 @@ def download_enabled():
     return config.getboolean("download", "enabled", fallback=False)
 
 
-def _default_download_dir():
+def desktop_dir():
     """The user's Desktop via the Windows known-folder API (handles redirection/localization),
-    falling back to ~/Desktop."""
+    falling back to ~/Desktop. Shared by the download-dir default and the Zip Results feature."""
     try:
         import ctypes
         from ctypes import windll, wintypes
@@ -125,7 +125,7 @@ def download_dir():
     with suppress(configparser.Error):
         config.read(config_paths())
     configured = config.get("download", "directory", fallback="").strip()
-    return configured or _default_download_dir()
+    return configured or desktop_dir()
 
 
 def _resolve_key(name, password, direct_keys):

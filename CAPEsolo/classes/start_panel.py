@@ -20,7 +20,7 @@ from CAPEsolo.capelib.resultserver import ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
 from CAPEsolo.lib.common.hashing import hash_file
 from CAPEsolo.utils.update_yara import UpdateYara
-from CAPEsolo.utils.download_sample import configured_sources, download_dir, download_enabled
+from CAPEsolo.utils.download_sample import configured_sources, download_dir, download_enabled, desktop_dir
 from .analysis_conf import AnalysisConfPanel
 from .debug_console import DebugConsole
 from .json_report import GetResults
@@ -215,6 +215,11 @@ class StartPanel(scrolled.ScrolledPanel):
         self.downloadBroker = None
         self._downloading = False
         self.InitUi()
+        # A prior/restored analysis (s_* found by GetPreviousTarget) is reportable without a run,
+        # so enable the report buttons; the per-tab process buttons enable from their artifacts.
+        if self.targetFile:
+            self.jsonReportBtn.Enable()
+            self.htmlReportBtn.Enable()
         self.LoadAnalysisConfFile()
         self.Bind(EVT_ANALYZER_COMPLETE, self.OnAnalyzerComplete)
         # Deferred so the frame is realized before the modal password dialog.
@@ -557,6 +562,10 @@ class StartPanel(scrolled.ScrolledPanel):
         updateYaraBtn = wx.Button(self, label="Update Yara")
         updateYaraBtn.Bind(wx.EVT_BUTTON, self.OnUpdateYara)
 
+        self.zipResultsBtn = wx.Button(self, label="Zip Results")
+        self.zipResultsBtn.SetToolTip("Zip the analysis directory to the Desktop, to restore in a clean VM.")
+        self.zipResultsBtn.Bind(wx.EVT_BUTTON, self.OnZipResults)
+
         openDirBtn = wx.Button(self, label="View Analysis Directory")
         openDirBtn.Bind(wx.EVT_BUTTON, self.OnOpenDirectory)
         self.terminateAnalyzerBtn = wx.Button(self, label="Kill")
@@ -571,6 +580,7 @@ class StartPanel(scrolled.ScrolledPanel):
         hbox5.Add(self.jsonReportBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox5.Add(self.htmlReportBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox5.Add(updateYaraBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
+        hbox5.Add(self.zipResultsBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox5.Add(openDirBtn, proportion=0, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox5.Add(self.terminateAnalyzerBtn, proportion=0, flag=wx.EXPAND)
         self.terminateAnalyzerBtn.Disable()
@@ -1453,6 +1463,38 @@ class StartPanel(scrolled.ScrolledPanel):
 
     def OnOpenDirectory(self, event):
         os.startfile(self.analysisDir)
+
+    def OnZipResults(self, event):
+        """Zip the analysis directory to the Desktop so it can be restored in a clean VM."""
+        dest = Path(desktop_dir()) / f"capesolo_analysis_{datetime.now():%Y%m%d_%H%M%S}"
+        self.zipResultsBtn.Disable()
+        self.GetMainFrame().statusBar.SetMessage("Zipping analysis results...")
+        # Background thread: the analysis dir (logs/, files/, memory/, CAPE/, ...) can be large.
+        Thread(target=self._ZipResultsThread, args=(dest,), daemon=True).start()
+
+    def _ZipResultsThread(self, dest):
+        try:
+            # dest has no extension; make_archive appends .zip. The Desktop target is outside
+            # analysisDir, so the growing archive is not swept into itself.
+            shutil.make_archive(str(dest), "zip", root_dir=self.analysisDir)
+            wx.CallAfter(self._OnZipResultsDone, dest.with_suffix(".zip"), None)
+        except Exception as e:
+            wx.CallAfter(self._OnZipResultsDone, None, str(e))
+
+    def _OnZipResultsDone(self, path, error):
+        statusBar = self.GetMainFrame().statusBar
+        self.zipResultsBtn.Enable()
+        if error is not None:
+            statusBar.SetMessage("Zip failed")
+            wx.MessageBox(f"Failed to zip results:\n{error}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        statusBar.SetMessage(f"Zipped results to {path.name}")
+        wx.MessageBox(
+            f"Analysis results zipped to:\n{path}\n\nTo restore in a clean VM, copy this file to "
+            "C:\\Users\\Public\\CAPEsolo\\restore.zip and start CAPEsolo.",
+            "Zip Results",
+            wx.OK | wx.ICON_INFORMATION,
+        )
 
     def _LevelChoice(self, labels, tooltip):
         """Read-only selector for an option whose value is a level, not a flag.
