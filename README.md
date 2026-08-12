@@ -28,6 +28,17 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
 
 Revert the VM after each analysis.
 
+View a JSON Report (standalone)
+* `tools/report_viewer.py` is a self-contained viewer for a CAPEsolo `report.json` that runs on
+  any host with just Python - no CAPEsolo install and no pip dependencies (stdlib tkinter).
+  * `python tools/report_viewer.py [path\to\report.json]`
+  * With no argument it opens `%USERPROFILE%\Desktop\report.json` (where CAPEsolo writes it);
+    use File > Open to pick another.
+  * Handles large reports: the file is read with a progress bar, the tree loads lazily (children
+    on expand), and the detail pane is bounded, so it stays responsive on hundred-MB/GB reports.
+    (A GB report still needs several GB of RAM to parse - inherent to Python's JSON.)
+  * Needs tkinter - bundled with the standard Windows/macOS Python; on Linux install `python3-tk`.
+
 Preserve Results From an Unstable VM
 * If a sample makes the VM unusable after detonation, click **Zip Results** on the Start panel to
   archive the whole analysis directory to `Desktop\capesolo_analysis_<timestamp>.zip`.
