@@ -1,7 +1,10 @@
 import hashlib
+import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -17,6 +20,7 @@ from CAPEsolo.capelib.resultserver import ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
 from CAPEsolo.lib.common.hashing import hash_file
 from CAPEsolo.utils.update_yara import UpdateYara
+from CAPEsolo.utils.download_sample import configured_sources, download_dir, download_enabled
 from .analysis_conf import AnalysisConfPanel
 from .debug_console import DebugConsole
 from .json_report import GetResults
@@ -111,6 +115,86 @@ class AnalyzerCompleteEvent(wx.PyCommandEvent):
         self.message = message
 
 
+class _DownloadCredentialsDialog(wx.Dialog):
+    """Startup prompt for sample downloads. A password decrypts stored encrypted keys; an API
+    key can also be entered directly (used as-is, no decryption). All fields are masked."""
+
+    def __init__(self, parent, hasStored):
+        super().__init__(parent, title="Sample Download Credentials")
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(
+            wx.StaticText(
+                self,
+                label=(
+                    "Enter a password to unlock stored encrypted keys, and/or enter an\n"
+                    "API key directly. Cancel to disable downloads."
+                ),
+            ),
+            flag=wx.ALL,
+            border=12,
+        )
+
+        # Password (for stored encrypted keys) and directly-entered keys sit in separate
+        # titled boxes for clarity.
+        self.pwdCtrl = None
+        if hasStored:
+            pwdBox = wx.StaticBoxSizer(wx.VERTICAL, self, "Password (unlock stored keys)")
+            self.pwdCtrl = wx.TextCtrl(pwdBox.GetStaticBox(), style=wx.TE_PASSWORD)
+            pwdBox.Add(self.pwdCtrl, flag=wx.EXPAND | wx.ALL, border=8)
+            outer.Add(pwdBox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
+
+        keyBox = wx.StaticBoxSizer(wx.VERTICAL, self, "Enter API key(s) directly")
+        keyParent = keyBox.GetStaticBox()
+        grid = wx.FlexGridSizer(rows=2, cols=2, hgap=8, vgap=8)
+        grid.AddGrowableCol(1, 1)
+        grid.Add(wx.StaticText(keyParent, label="VirusTotal:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.vtCtrl = wx.TextCtrl(keyParent, style=wx.TE_PASSWORD)
+        grid.Add(self.vtCtrl, flag=wx.EXPAND)
+        grid.Add(wx.StaticText(keyParent, label="MalwareBazaar:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.mbCtrl = wx.TextCtrl(keyParent, style=wx.TE_PASSWORD)
+        grid.Add(self.mbCtrl, flag=wx.EXPAND)
+        keyBox.Add(grid, flag=wx.EXPAND | wx.ALL, border=8)
+        outer.Add(keyBox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
+
+        # Explicit wx.Buttons rather than CreateButtonSizer: the stock MSW dialog buttons render
+        # natively and ignore SetBackgroundColour, so the theme could not darken them. wx.Dialog
+        # still auto-handles the ID_OK / ID_CANCEL ids to end the modal with the right result.
+        btnRow = wx.BoxSizer(wx.HORIZONTAL)
+        okBtn = wx.Button(self, wx.ID_OK, "OK")
+        okBtn.SetDefault()
+        btnRow.AddStretchSpacer(1)
+        btnRow.Add(okBtn, flag=wx.RIGHT, border=8)
+        btnRow.Add(wx.Button(self, wx.ID_CANCEL, "Cancel"))
+        outer.Add(btnRow, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
+
+        # Enter confirms OK from any field (SetDefault alone is unreliable while a text field
+        # has focus); Escape still cancels via the dialog's built-in ID_CANCEL handling.
+        self.Bind(wx.EVT_CHAR_HOOK, self._OnCharHook)
+
+        # Theme first, then fit: apply_theme swaps in FONT_UI, so fitting beforehand would size
+        # the dialog to the smaller default font and squish the controls and the button row.
+        self.SetSizer(outer)
+        apply_theme(self)
+        self.Fit()
+        if self.GetSize().width < 440:
+            self.SetSize(wx.Size(440, self.GetSize().height))
+        self.SetMinSize(self.GetSize())
+
+    def _OnCharHook(self, event):
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            self.EndModal(wx.ID_OK)
+            return
+        event.Skip()
+
+    def GetCredentials(self):
+        password = self.pwdCtrl.GetValue() if self.pwdCtrl else ""
+        keys = {
+            "VirusTotal": self.vtCtrl.GetValue().strip(),
+            "MalwareBazaar": self.mbCtrl.GetValue().strip(),
+        }
+        return password, keys
+
+
 class StartPanel(scrolled.ScrolledPanel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -128,9 +212,12 @@ class StartPanel(scrolled.ScrolledPanel):
         self.idbg = False
         self.dbgConsole = None
         self.processTreeWindow = None
+        self.downloadBroker = None
         self.InitUi()
         self.LoadAnalysisConfFile()
         self.Bind(EVT_ANALYZER_COMPLETE, self.OnAnalyzerComplete)
+        # Deferred so the frame is realized before the modal password dialog.
+        wx.CallAfter(self._InitDownloadBroker)
 
         """ for debugging the panel layout
         mainFrame = self.GetMainFrame()
@@ -153,6 +240,43 @@ class StartPanel(scrolled.ScrolledPanel):
         browseBtn.Bind(wx.EVT_BUTTON, self.OnBrowse)
         hbox1.Add(self.targetPath, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
         hbox1.Add(browseBtn, proportion=0)
+
+        # Download a sample by hash and feed it into the same target flow as Browse. Grouped in
+        # a titled box so it's clearly the download feature. The source is auto-selected
+        # (VirusTotal first, then MalwareBazaar) from the hash and which keys are configured; the
+        # controls are enabled once the download broker starts (see _InitDownloadBroker).
+        dlBox = wx.StaticBoxSizer(wx.VERTICAL, self, "Download by hash")
+        dlParent = dlBox.GetStaticBox()
+
+        hboxDownload = wx.BoxSizer(wx.HORIZONTAL)
+        self.hashInput = wx.TextCtrl(dlParent)
+        self.hashInput.SetHint("<md5, sha1, sha256>")
+        self.hashInput.SetToolTip("MD5/SHA1/SHA256 hex hash. MalwareBazaar requires SHA256.")
+        self.downloadBtn = wx.Button(dlParent, label="Download")
+        self.downloadBtn.Disable()
+        self.downloadBtn.Bind(wx.EVT_BUTTON, self.OnDownloadSample)
+        hboxDownload.Add(self.hashInput, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
+        hboxDownload.Add(self.downloadBtn, proportion=0)
+        dlBox.Add(hboxDownload, flag=wx.EXPAND | wx.ALL, border=5)
+
+        # Where downloaded samples are saved; prefilled with the effective default
+        # ([download] directory, else the user's Desktop) and editable per download.
+        hboxDownloadPath = wx.BoxSizer(wx.HORIZONTAL)
+        hboxDownloadPath.Add(
+            wx.StaticText(dlParent, label="Path:"),
+            flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT,
+            border=5,
+        )
+        self.downloadPathInput = wx.TextCtrl(dlParent)
+        self.downloadPathInput.SetValue(download_dir())
+        self.downloadPathInput.SetToolTip("Directory where downloaded samples are saved.")
+        self.downloadPathInput.Disable()
+        self.downloadDirBtn = wx.Button(dlParent, label="Browse...")
+        self.downloadDirBtn.Disable()
+        self.downloadDirBtn.Bind(wx.EVT_BUTTON, self.OnBrowseDownloadDir)
+        hboxDownloadPath.Add(self.downloadPathInput, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
+        hboxDownloadPath.Add(self.downloadDirBtn, proportion=0)
+        dlBox.Add(hboxDownloadPath, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         hbox2 = wx.BoxSizer(wx.HORIZONTAL)
         packageLabel = wx.StaticText(self, label="Packages")
@@ -452,6 +576,7 @@ class StartPanel(scrolled.ScrolledPanel):
 
         # Layout
         vbox.Add(hbox1, flag=wx.EXPAND | wx.ALL, border=10)
+        vbox.Add(dlBox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         vbox.Add(hbox3, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         vbox.Add(hboxHelp, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
@@ -895,6 +1020,15 @@ class StartPanel(scrolled.ScrolledPanel):
                 wx.OK | wx.ICON_ERROR,
             )
 
+    def OnBrowseDownloadDir(self, event):
+        current = self.downloadPathInput.GetValue().strip()
+        defaultPath = current if os.path.isdir(current) else ""
+        with wx.DirDialog(
+            self, "Choose download directory", defaultPath=defaultPath, style=wx.DD_DEFAULT_STYLE
+        ) as dlg:
+            if dlg.ShowModal() == wx.ID_OK:
+                self.downloadPathInput.SetValue(dlg.GetPath())
+
     def OnBrowse(self, event):
         # Must be absolute and exist: wxFileDialog hands defaultDir to
         # SHCreateItemFromParsingName, which rejects a relative path outright with
@@ -920,6 +1054,117 @@ class StartPanel(scrolled.ScrolledPanel):
                 self.OnTargetSelection()
             except IOError:
                 wx.LogError(f"Cannot open file '{pathname}'.")
+
+    def _InitDownloadBroker(self):
+        """When downloads are enabled, prompt once for a password and/or API keys and start the
+        broker subprocess that holds them, so the GUI never retains the plaintext key. Left
+        disabled with a hint when the feature is off or no credentials are supplied."""
+        if not download_enabled():
+            self.downloadBtn.SetToolTip(
+                "Downloads disabled. Set [download] enabled = true in cfg.ini to use them."
+            )
+            return
+        try:
+            stored = configured_sources()
+        except Exception:
+            stored = []
+        dlg = _DownloadCredentialsDialog(self, bool(stored))
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            self.downloadBtn.SetToolTip("Restart CAPEsolo and enter credentials to enable downloads.")
+            return
+        password, keys = dlg.GetCredentials()
+        dlg.Destroy()
+        # A provider is usable with a directly-entered key, or a stored blob plus the password.
+        if not (keys.get("VirusTotal") or keys.get("MalwareBazaar") or (password and stored)):
+            self.downloadBtn.SetToolTip(
+                "No key or password entered. Paste an API key at startup, or configure one with tools/encrypt_api_key.py."
+            )
+            return
+        try:
+            self.downloadBroker = subprocess.Popen(
+                [sys.executable, "-m", "CAPEsolo.utils.download_sample", "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self.downloadBroker.stdin.write(json.dumps({"password": password, "keys": keys}) + "\n")
+            self.downloadBroker.stdin.flush()
+        except Exception as e:
+            self.downloadBroker = None
+            wx.MessageBox(f"Could not start the download helper:\n{e}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        finally:
+            password = None
+            keys = None
+        self.downloadBtn.Enable()
+        self.downloadBtn.SetToolTip("Download by hash (auto: VirusTotal, then MalwareBazaar).")
+        self.downloadPathInput.Enable()
+        self.downloadDirBtn.Enable()
+
+    def _StopDownloadBroker(self):
+        """Kill the broker and wait for it to exit, so the password/key are gone from memory
+        before detonation (its pages are reclaimed and zero-filled by the OS)."""
+        broker = self.downloadBroker
+        if not broker:
+            return
+        self.downloadBroker = None
+        with suppress(Exception):
+            broker.stdin.close()
+        with suppress(Exception):
+            broker.terminate()
+        with suppress(Exception):
+            broker.wait(timeout=5)
+
+    def OnDownloadSample(self, event):
+        if not self.downloadBroker or self.downloadBroker.poll() is not None:
+            wx.MessageBox(
+                "Downloads are not available. Restart CAPEsolo and enter the password.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+        sampleHash = self.hashInput.GetValue().strip()
+        if not sampleHash:
+            wx.MessageBox("Enter a sample hash to download.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        # Read the destination on the GUI thread; fall back to the configured/default dir.
+        dest = self.downloadPathInput.GetValue().strip() or download_dir()
+        self.downloadBtn.Disable()  # one download at a time over the single broker pipe
+        self.GetMainFrame().statusBar.SetMessage(f"Downloading {sampleHash}...")
+        Thread(target=self._DownloadSampleThread, args=(sampleHash, dest), daemon=True).start()
+
+    def _DownloadSampleThread(self, sampleHash, dest):
+        try:
+            broker = self.downloadBroker
+            if not broker or broker.poll() is not None:
+                raise RuntimeError("download helper is not running")
+            broker.stdin.write(json.dumps({"hash": sampleHash, "dest": dest}) + "\n")
+            broker.stdin.flush()
+            line = broker.stdout.readline()
+            if not line:
+                raise RuntimeError("no response from download helper")
+            reply = json.loads(line)
+            if reply.get("ok"):
+                wx.CallAfter(self._OnDownloadDone, Path(reply["path"]), None)
+            else:
+                wx.CallAfter(self._OnDownloadDone, None, reply.get("error", "unknown error"))
+        except Exception as e:
+            wx.CallAfter(self._OnDownloadDone, None, str(e))
+
+    def _OnDownloadDone(self, path, error):
+        statusBar = self.GetMainFrame().statusBar
+        if self.downloadBroker:  # only re-enable if downloads are still available
+            self.downloadBtn.Enable()
+        if error is not None:
+            statusBar.SetMessage("Download failed")
+            wx.MessageBox(f"Sample download failed:\n{error}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        statusBar.SetMessage(f"Downloaded {path.name}")
+        # Reuse the Browse flow: set the target path and run the same validation.
+        self.targetPath.SetValue(str(path))
+        self.OnTargetSelection()
 
     def CopyTarget(self):
         self.targetFile = Path(self.analysisDir) / f"s_{hash_file(hashlib.sha256, self.target)}"
@@ -1104,6 +1349,8 @@ class StartPanel(scrolled.ScrolledPanel):
                 self.processTreeWindow.Close()
             self.processTreeWindow = ProcessTreeWindow(self, "Process Tree", position)
             self.processTreeWindow.Show()
+            # Kill the download broker (holding the key password) before the sample runs.
+            self._StopDownloadBroker()
             self.StartAnalysis()
 
         except Exception as e:

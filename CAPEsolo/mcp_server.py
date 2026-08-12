@@ -163,6 +163,7 @@ def _read_mcp_settings() -> dict[str, Any]:
         port = DEFAULT_MCP_PORT
 
     return {
+        "enabled": config.getboolean(section, "enabled", fallback=False),
         "transport": config.get(section, "transport", fallback=DEFAULT_MCP_TRANSPORT).strip().lower(),
         "host": config.get(section, "host", fallback=DEFAULT_MCP_HOST).strip(),
         "port": port,
@@ -1841,6 +1842,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=settings["port"], help="Bind port for streamable-http (default: %(default)s)")
     parser.add_argument("--path", default=settings["path"], help="HTTP path for streamable-http (default: %(default)s)")
     args = parser.parse_args()
+
+    if not settings["enabled"]:
+        msg = "MCP server is disabled. Set [mcp_server] enabled = true in cfg.ini to enable it."
+        log.warning(msg)
+        print(msg, file=sys.stderr)
+        return
 
     if args.transport == "stdio":
         mcp.run()

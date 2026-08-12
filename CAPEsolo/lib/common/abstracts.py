@@ -216,6 +216,10 @@ class Package:
             return filepath
 
         newpath = os.path.join(self.curdir, os.path.basename(filepath))
+        # Skip a move onto itself: a sample downloaded straight into curdir (e.g. the download
+        # directory used with "Run sample from current directory") is already in place.
+        if os.path.normcase(os.path.abspath(newpath)) == os.path.normcase(os.path.abspath(filepath)):
+            return filepath
         shutil.move(filepath, newpath)
         return newpath
 

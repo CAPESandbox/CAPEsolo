@@ -219,4 +219,11 @@ class MainFrame(wx.Frame):
         self.SetIcon(icon)
 
     def OnClose(self, event):
+        # Kill the download broker so its held key password does not outlive the app.
+        stop = getattr(self.startTab, "_StopDownloadBroker", None)
+        if stop:
+            try:
+                stop()
+            except Exception:
+                pass
         self.Destroy()

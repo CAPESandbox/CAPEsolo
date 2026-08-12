@@ -302,8 +302,9 @@ def _init():
 # Immersive Dark Mode for Windows Frame Title Bars
 # ---------------------------------------------------------------------------
 def apply_window_theme(frame):
-    """Set the title bar to match the active palette, for a wx.Frame on Windows."""
-    if isinstance(frame, wx.Frame):
+    """Set the title bar to match the active palette, for a top-level window (Frame or Dialog)
+    on Windows."""
+    if isinstance(frame, wx.TopLevelWindow):
         import ctypes
         hwnd = frame.GetHandle()
         try:
@@ -362,7 +363,7 @@ def apply_theme(widget):
     Theme based on each widget's type.
     """
     _init()
-    if isinstance(widget, wx.Frame):
+    if isinstance(widget, wx.TopLevelWindow):
         apply_window_theme(widget)
     _style_widget(widget)
     for child in widget.GetChildren():
@@ -549,8 +550,8 @@ def _style_widget(w):
         w.SetSelectionForeground(FG_SELECT)
         return
 
-    # --- Frames (secondary windows) ---
-    if isinstance(w, wx.Frame):
+    # --- Top-level windows (secondary frames and dialogs) ---
+    if isinstance(w, wx.TopLevelWindow):
         w.SetBackgroundColour(BG_MAIN)
         w.SetForegroundColour(FG_PRIMARY)
         return
