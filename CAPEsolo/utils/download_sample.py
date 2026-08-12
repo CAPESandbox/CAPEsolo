@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import zipfile
 from contextlib import suppress
 from pathlib import Path
@@ -259,26 +260,53 @@ def _download_malwarebazaar(sample_hash, dest_dir, api_key):
 
 def _serve():
     """Broker mode: read credentials from the first stdin line as JSON
-    (`{"password":..., "keys":{provider:key}}`), then service one JSON command per line
-    (`{"hash","dest"}`) with one JSON reply per line. Holds only the entered secrets."""
+    (`{"password":..., "keys":{provider:key}}`), then service commands, one JSON per line.
+
+    A download (`{"hash","dest"}`) runs in a worker thread so a `{"action":"cancel"}` command
+    can abandon a stuck or slow download and reply immediately - the broker and its held
+    password stay alive. Exactly one reply is sent per download (either its result or
+    "cancelled"), coordinated under write_lock."""
     try:
         creds = json.loads(sys.stdin.readline() or "{}")
     except Exception:
         creds = {}
     password = creds.get("password") or ""
     direct_keys = creds.get("keys") or {}
+
+    write_lock = threading.Lock()
+
+    def send(obj):
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+    def worker(cmd, state):
+        try:
+            path = download_sample(cmd["hash"], cmd["dest"], password, direct_keys)
+            result = {"ok": True, "path": str(path)}
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        with write_lock:
+            if not state["cancelled"]:
+                state["done"] = True
+                send(result)
+
+    state = {"cancelled": True, "done": True}  # no active download initially
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         try:
             cmd = json.loads(line)
-            path = download_sample(cmd["hash"], cmd["dest"], password, direct_keys)
-            reply = {"ok": True, "path": str(path)}
-        except Exception as e:
-            reply = {"ok": False, "error": str(e)}
-        sys.stdout.write(json.dumps(reply) + "\n")
-        sys.stdout.flush()
+        except Exception:
+            continue
+        if cmd.get("action") == "cancel":
+            with write_lock:
+                if not state["done"] and not state["cancelled"]:
+                    state["cancelled"] = True
+                    send({"ok": False, "error": "cancelled"})
+            continue
+        state = {"cancelled": False, "done": False}
+        threading.Thread(target=worker, args=(cmd, state), daemon=True).start()
 
 
 if __name__ == "__main__":

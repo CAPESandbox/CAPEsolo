@@ -213,6 +213,7 @@ class StartPanel(scrolled.ScrolledPanel):
         self.dbgConsole = None
         self.processTreeWindow = None
         self.downloadBroker = None
+        self._downloading = False
         self.InitUi()
         self.LoadAnalysisConfFile()
         self.Bind(EVT_ANALYZER_COMPLETE, self.OnAnalyzerComplete)
@@ -1118,6 +1119,10 @@ class StartPanel(scrolled.ScrolledPanel):
             broker.wait(timeout=5)
 
     def OnDownloadSample(self, event):
+        # The button doubles as Cancel while a download is running.
+        if self._downloading:
+            self._CancelDownload()
+            return
         if not self.downloadBroker or self.downloadBroker.poll() is not None:
             wx.MessageBox(
                 "Downloads are not available. Restart CAPEsolo and enter the password.",
@@ -1131,9 +1136,26 @@ class StartPanel(scrolled.ScrolledPanel):
             return
         # Read the destination on the GUI thread; fall back to the configured/default dir.
         dest = self.downloadPathInput.GetValue().strip() or download_dir()
-        self.downloadBtn.Disable()  # one download at a time over the single broker pipe
+        self._downloading = True
+        self.downloadBtn.SetLabel("Cancel")
+        self.downloadBtn.SetToolTip("Cancel the download in progress.")
+        self.hashInput.Disable()
+        self.downloadPathInput.Disable()
+        self.downloadDirBtn.Disable()
         self.GetMainFrame().statusBar.SetMessage(f"Downloading {sampleHash}...")
         Thread(target=self._DownloadSampleThread, args=(sampleHash, dest), daemon=True).start()
+
+    def _CancelDownload(self):
+        broker = self.downloadBroker
+        if not broker:
+            return
+        # Tell the broker to abandon the in-flight download; it replies "cancelled" and stays
+        # alive (keeps the held password), so downloads remain available afterwards.
+        with suppress(Exception):
+            broker.stdin.write(json.dumps({"action": "cancel"}) + "\n")
+            broker.stdin.flush()
+        self.downloadBtn.Disable()  # avoid double-cancel; _OnDownloadDone restores the button
+        self.GetMainFrame().statusBar.SetMessage("Cancelling download...")
 
     def _DownloadSampleThread(self, sampleHash, dest):
         try:
@@ -1155,11 +1177,20 @@ class StartPanel(scrolled.ScrolledPanel):
 
     def _OnDownloadDone(self, path, error):
         statusBar = self.GetMainFrame().statusBar
+        self._downloading = False
+        self.downloadBtn.SetLabel("Download")
+        self.hashInput.Enable()
         if self.downloadBroker:  # only re-enable if downloads are still available
             self.downloadBtn.Enable()
+            self.downloadBtn.SetToolTip("Download by hash (auto: VirusTotal, then MalwareBazaar).")
+            self.downloadPathInput.Enable()
+            self.downloadDirBtn.Enable()
         if error is not None:
-            statusBar.SetMessage("Download failed")
-            wx.MessageBox(f"Sample download failed:\n{error}", "Error", wx.OK | wx.ICON_ERROR)
+            if str(error) == "cancelled":
+                statusBar.SetMessage("Download cancelled")
+            else:
+                statusBar.SetMessage("Download failed")
+                wx.MessageBox(f"Sample download failed:\n{error}", "Error", wx.OK | wx.ICON_ERROR)
             return
         statusBar.SetMessage(f"Downloaded {path.name}")
         # Reuse the Browse flow: set the target path and run the same validation.
