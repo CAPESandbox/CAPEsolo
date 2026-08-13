@@ -81,4 +81,87 @@
             </table>
         {% endif %}
     {% endfor %}
+
+    {% if net.decrypted or net.http_ex or net.https_ex or net.smtp_ex %}
+        <h5 class="mt-3">Decrypted / Plaintext</h5>
+        {% set dec = net.decrypted %}
+        {% if dec %}
+            {% if dec.error %}
+                <p class="text-muted">Decryption unavailable: {{ dec.error }}</p>
+            {% else %}
+                <p class="text-muted">
+                    {{ dec.counts.https_ex }} decrypted, {{ dec.counts.http_ex }} cleartext,
+                    {{ dec.counts.smtp_ex }} smtp stream(s) reassembled from {{ dec.secrets }} TLS secret(s).
+                    {% if not (dec.counts.https_ex or dec.counts.http_ex or dec.counts.smtp_ex) %}
+                        No streams could be reassembled - the capture may lack TLS secrets or be truncated to a fixed frame size.
+                    {% endif %}
+                </p>
+            {% endif %}
+        {% endif %}
+
+        {# Request/response below are headers only; bodies are stored on disk by sha256. #}
+        {% set http_streams = (net.http_ex or []) + (net.https_ex or []) %}
+        {% if http_streams %}
+        <div id="accordionPlaintext">
+        {% for s in http_streams %}
+            <div class="card mt-2">
+                <div class="card-header" id="headingPlaintext{{loop.index}}">
+                    <h5 class="mb-0">
+                        <button class="btn btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#collapsePlaintext{{loop.index}}" aria-expanded="false" aria-controls="collapsePlaintext{{loop.index}}">
+                            {{ s.protocol }} {{ s.method }} {{ s.host }}{{ s.uri }}{% if s.status %} &rarr; {{ s.status }}{% endif %}
+                        </button>
+                    </h5>
+                </div>
+                <div id="collapsePlaintext{{loop.index}}" class="collapse" aria-labelledby="headingPlaintext{{loop.index}}" data-bs-parent="#accordionPlaintext">
+                    <div class="card-body">
+                        <p class="mb-1"><strong>{{ s.src }}:{{ s.sport }} &rarr; {{ s.dst }}:{{ s.dport }}</strong></p>
+                        {% if s.request %}
+                            <h6>Request</h6>
+                            <pre class="border rounded p-2">{{ s.request | replace('\x00', '') | truncate(8000, True, '\n... [truncated, full body on disk] ...', 0) }}</pre>
+                        {% endif %}
+                        {% if s.req %}
+                            <p class="mb-1 text-muted">request body: {{ s.req.sha256 }} ({{ s.req.size }} bytes){% if s.req.path %} - {{ s.req.path }}{% endif %}</p>
+                        {% endif %}
+                        {% if s.response %}
+                            <h6>Response</h6>
+                            <pre class="border rounded p-2">{{ s.response | replace('\x00', '') | truncate(8000, True, '\n... [truncated, full body on disk] ...', 0) }}</pre>
+                        {% endif %}
+                        {% if s.resp %}
+                            <p class="mb-1 text-muted">response body: {{ s.resp.sha256 }} ({{ s.resp.size }} bytes){% if s.resp.path %} - {{ s.resp.path }}{% endif %}</p>
+                            {% if s.resp.preview %}
+                                <pre class="border rounded p-2">{{ s.resp.preview | join('\n') }}</pre>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if net.smtp_ex %}
+        <div id="accordionSmtp" class="mt-2">
+        {% for s in net.smtp_ex %}
+            {% set r = s.req or {} %}
+            <div class="card mt-2">
+                <div class="card-header" id="headingSmtp{{loop.index}}">
+                    <h5 class="mb-0">
+                        <button class="btn btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#collapseSmtp{{loop.index}}" aria-expanded="false" aria-controls="collapseSmtp{{loop.index}}">
+                            smtp {{ r.mail_from or '?' }} &rarr; {{ r.mail_to or '?' }}
+                        </button>
+                    </h5>
+                </div>
+                <div id="collapseSmtp{{loop.index}}" class="collapse" aria-labelledby="headingSmtp{{loop.index}}" data-bs-parent="#accordionSmtp">
+                    <div class="card-body">
+                        <p class="mb-1"><strong>{{ s.src }}:{{ s.sport }} &rarr; {{ s.dst }}:{{ s.dport }}</strong></p>
+                        {% if r.mail_body %}
+                            <pre class="border rounded p-2">{{ r.mail_body | string | replace('\x00', '') | truncate(8000, True, '\n... [truncated] ...', 0) }}</pre>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+        </div>
+        {% endif %}
+    {% endif %}
 </div>

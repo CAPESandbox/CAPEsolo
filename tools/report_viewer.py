@@ -32,6 +32,7 @@ READ_CHUNK = 8 * 1024 * 1024
 MAX_INDEX = 300_000          # cap on global-search index entries
 MAX_STRINGS = 100_000        # cap on strings pulled into the search index
 DETAIL_STRINGS = 2000        # cap on strings shown in a payload detail pane
+PLAINTEXT_BLOCK = 8000       # cap on a decrypted request/response block shown in Network
 DEFAULT_REPORT = os.path.join(os.path.expanduser("~"), "Desktop", "report.json")
 
 
@@ -224,6 +225,19 @@ class ReportViewer:
             frame, tree = self._table(self.net_notebook, cols, {c: 220 for c in cols})
             self.net_tables[name] = tree
             self.net_notebook.add(frame, text=name)
+        # Decrypted/reassembled streams need a detail pane for their request and response,
+        # unlike the flat tables above, so this sub-tab is a table over a detail text pane.
+        pane = ttk.PanedWindow(self.net_notebook, orient=tk.VERTICAL)
+        tframe, self.net_plain_tree = self._table(
+            pane, ("proto", "method", "host", "uri", "status"),
+            {"proto": 70, "method": 70, "host": 200, "uri": 300, "status": 60},
+        )
+        self.net_plain_tree.bind("<<TreeviewSelect>>", self._on_net_plain_select)
+        self._net_plain_rows = {}
+        dframe, self.net_plain_detail = self._detail_text(pane)
+        pane.add(tframe, weight=2)
+        pane.add(dframe, weight=3)
+        self.net_notebook.add(pane, text="Plaintext")
         self._add_tab(outer, "Network", "Network")
 
     def _build_payloads_tab(self):
@@ -504,6 +518,124 @@ class ReportViewer:
             for f in net.get(proto) or []:
                 self.net_tables["Flows"].insert("", "end",
                                                 values=(proto, f.get("src", ""), f.get("dst", ""), f.get("dport", "")))
+        self._build_plaintext(net)
+
+    def _build_plaintext(self, net):
+        # http_ex/https_ex/smtp_ex carry the decrypted plaintext; each row holds its whole
+        # entry so the detail pane can show request/response and the on-disk body digests.
+        self.net_plain_tree.delete(*self.net_plain_tree.get_children())
+        self._net_plain_rows = {}
+        for key in ("http_ex", "https_ex"):
+            for e in net.get(key) or []:
+                item = self.net_plain_tree.insert("", "end", values=(
+                    e.get("protocol", ""), e.get("method", ""),
+                    e.get("host") or e.get("dst", ""), e.get("uri", ""), e.get("status", "")))
+                self._net_plain_rows[item] = ("http", e)
+        for e in net.get("smtp_ex") or []:
+            r = e.get("req") or {}
+            to = r.get("mail_to")
+            if isinstance(to, (list, tuple)):
+                to = ", ".join(str(x) for x in to)
+            item = self.net_plain_tree.insert("", "end", values=(
+                "smtp", "", r.get("hostname", ""), to or "", ""))
+            self._net_plain_rows[item] = ("smtp", e)
+        self._set_text(self.net_plain_detail, self._decrypted_status(net))
+
+    @staticmethod
+    def _decrypted_status(net):
+        # The report carries why decryption produced little or nothing (missing dependency,
+        # no secrets, truncated capture); say so rather than showing an empty pane.
+        dec = net.get("decrypted") or {}
+        has = any(net.get(k) for k in ("http_ex", "https_ex", "smtp_ex"))
+        if not dec:
+            return ("Select a stream to view its request and response." if has
+                    else "No decrypted streams. (No capture was processed, or decryption did not run.)")
+        if dec.get("error"):
+            return f"Decryption unavailable: {dec['error']}"
+        c = dec.get("counts") or {}
+        line = (f"{c.get('https_ex', 0)} decrypted, {c.get('http_ex', 0)} cleartext, "
+                f"{c.get('smtp_ex', 0)} smtp stream(s) from {dec.get('secrets', 0)} TLS secret(s).")
+        if has:
+            return line + "\n\nSelect a stream to view its request and response."
+        return line + ("\nNo streams could be reassembled - the capture may lack TLS secrets "
+                       "or be truncated to a fixed frame size.")
+
+    @staticmethod
+    def _net_block(title, text):
+        if not text:
+            return ""
+        # tkinter's Text terminates on a NUL, so strip them the way the Network tab does.
+        text = str(text).replace("\x00", "")
+        if len(text) > PLAINTEXT_BLOCK:
+            text = text[:PLAINTEXT_BLOCK] + f"\n... [truncated, {len(text)} chars total; full body on disk] ..."
+        return f"--- {title} ---\n{text}"
+
+    @staticmethod
+    def _net_body(title, digests):
+        if not digests:
+            return ""
+        lines = [f"--- {title} ---",
+                 f"sha256 {digests.get('sha256', '')}  ({digests.get('size', 0)} bytes)"]
+        if digests.get("path"):
+            lines.append(f"saved to {digests['path']}")
+        lines.extend(digests.get("preview") or ())
+        return "\n".join(lines)
+
+    def _http_detail(self, e):
+        header = [
+            ("Protocol", e.get("protocol", "")),
+            ("Method", e.get("method", "")),
+            ("Host", e.get("host") or e.get("dst", "")),
+            ("URI", e.get("uri", "")),
+            ("Status", e.get("status") or "no response"),
+            ("Source", f"{e.get('src', '')}:{e.get('sport', '')}"),
+            ("Destination", f"{e.get('dst', '')}:{e.get('dport', '')}"),
+        ]
+        sections = ["\n".join(f"{k + ':':<14}{v}" for k, v in header)]
+        for block in (
+            self._net_block("request", e.get("request")),
+            self._net_block("response", e.get("response")),
+            self._net_body("request body", e.get("req")),
+            self._net_body("response body", e.get("resp")),
+        ):
+            if block:
+                sections.append(block)
+        return "\n\n".join(sections)
+
+    def _smtp_detail(self, e):
+        r = e.get("req") or {}
+        to = r.get("mail_to")
+        if isinstance(to, (list, tuple)):
+            to = ", ".join(str(x) for x in to)
+        header = [
+            ("Protocol", "smtp"),
+            ("Hostname", r.get("hostname", "")),
+            ("Mail from", r.get("mail_from", "")),
+            ("Mail to", to or ""),
+            ("Source", f"{e.get('src', '')}:{e.get('sport', '')}"),
+            ("Destination", f"{e.get('dst', '')}:{e.get('dport', '')}"),
+        ]
+        sections = ["\n".join(f"{k + ':':<14}{v}" for k, v in header)]
+        headers = r.get("headers") or {}
+        if headers:
+            sections.append("--- headers ---\n" + "\n".join(f"    {n}: {v}" for n, v in headers.items()))
+        block = self._net_block("message", r.get("mail_body"))
+        if block:
+            sections.append(block)
+        banner = (e.get("resp") or {}).get("banner")
+        if banner:
+            sections.append(f"--- server banner ---\n{banner}")
+        return "\n\n".join(sections)
+
+    def _on_net_plain_select(self, event):
+        sel = self.net_plain_tree.selection()
+        if not sel:
+            return
+        kind, entry = self._net_plain_rows.get(sel[0], (None, None))
+        if entry is None:
+            return
+        text = self._smtp_detail(entry) if kind == "smtp" else self._http_detail(entry)
+        self._set_text(self.net_plain_detail, text)
 
     # ------------------------------------------------------------------ Payloads
     def _build_payloads(self):

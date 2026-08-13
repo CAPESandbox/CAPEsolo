@@ -408,4 +408,17 @@ def NetworkSummary(behavior=None, jsLog=None, capture=None, decrypted=None):
         if any(decrypted.get(k) for k in ("http_ex", "https_ex", "smtp_ex")):
             collector.Source("decrypted")
 
+        # Carry the decryption status so a report can explain a thin or empty Plaintext
+        # section - a missing dependency, no secrets, or a truncated capture - the way the
+        # Network tab does, instead of leaving the reader to guess why it decrypted nothing.
+        network["decrypted"] = {
+            "available": decrypted.get("available", False),
+            "secrets": decrypted.get("secrets", 0),
+            "error": decrypted.get("error", ""),
+            "counts": {
+                key: len(decrypted.get(key) or [])
+                for key in ("http_ex", "https_ex", "smtp_ex")
+            },
+        }
+
     return network
