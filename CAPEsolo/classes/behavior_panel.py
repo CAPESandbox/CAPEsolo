@@ -13,6 +13,9 @@ from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme, BEHAVIOR_CATEGORY_COLOR
 
 BACKGNDCLR = BEHAVIOR_CATEGORY_COLORS
 
+CATEGORY_ROW_CAP = 5000       # cap on rows shown in a behavior-category grid
+CATEGORY_DETAIL_CAP = 8000    # cap on chars shown in the category detail pane
+
 
 class Options:
     def __init__(self):
@@ -56,13 +59,23 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.categoryDropdown = wx.ComboBox(catPane, style=wx.CB_READONLY)
         self.categoryDropdown.Bind(wx.EVT_COMBOBOX, self.OnCatView)
         catBox.Add(self.categoryDropdown, 0, flag=wx.EXPAND | wx.ALL, border=5)
-        self.categoryResults = wx.TextCtrl(
+        # Columns are set per category at render time; a selected row's full record shows in
+        # the detail pane below (long registry content / decrypted buffers do not fit a cell).
+        self.categoryGrid = CopyableGrid(catPane, 0, 0)
+        self.categoryGrid.SetRowLabelSize(0)
+        self.categoryGrid.EnableEditing(False)
+        self.categoryGrid.SetMinSize((-1, 250))
+        self.categoryGrid.Bind(gridlib.EVT_GRID_SELECT_CELL, self.OnCategoryRowSelect)
+        catBox.Add(self.categoryGrid, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        self.categoryDetail = wx.TextCtrl(
             catPane, style=wx.TE_MULTILINE | wx.TE_READONLY
         )
-        self.categoryResults.SetMinSize((-1, 250))
-        self.categoryResults.SetValue("Select a category to view its data.")
-        catBox.Add(self.categoryResults, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        self.categoryDetail.SetMinSize((-1, 120))
+        self.categoryDetail.SetValue("Select a category to view its data.")
+        catBox.Add(self.categoryDetail, 0, flag=wx.EXPAND | wx.ALL, border=5)
         catPane.SetSizer(catBox)
+        # Full source record per grid row, parallel to the rows, for the detail pane.
+        self._categoryRows = []
 
         self.procTreePane = wx.CollapsiblePane(self, label="Process Tree")
         self.procTreePane.Bind(
@@ -387,13 +400,149 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             )
             return
         results = self.GetCatBehavior(selectedCategory)
-        # Category output has its own box now, decoupled from the process-details window.
-        self.categoryResults.SetValue(self.ViewData(results))
+        # Category output has its own grid + detail pane, decoupled from process details.
+        self.BuildCategoryView(selectedCategory, results)
         self.Layout()
 
     def GetCatBehavior(self, category):
         results = self.results.get("behavior", {}).get(category) or "No results"
         return results
+
+    @staticmethod
+    def _CategoryCell(value):
+        # Collapse whitespace and strip NULs (a raw NUL silently truncates a native grid cell,
+        # like network_panel does), and clamp the cell; the full value is in the detail pane.
+        if value is None:
+            return ""
+        return " ".join(str(value).split()).replace("\x00", "")[:512]
+
+    def _CategoryRows(self, category, data):
+        """Return (columns, rows, records) for a category, or (None, [], []) for a text dump.
+
+        columns: list of (label, width); rows: list of pre-cleaned cell lists; records: the full
+        source object per row, for the detail pane.
+        """
+        cell = self._CategoryCell
+        if category == "summary" and isinstance(data, dict):
+            cols = [("Type", 160), ("Value", 820)]
+            rows, records = [], []
+            for key, items in data.items():
+                for item in items or []:
+                    rows.append([cell(key), cell(item)])
+                    records.append({key: item})
+            return cols, rows, records
+        if category == "enhanced" and isinstance(data, list):
+            cols = [("Time", 170), ("Event", 90), ("Object", 100), ("Details", 700)]
+            rows, records = [], []
+            for e in data:
+                d = e.get("data") or {}
+                details = "; ".join(f"{k}={v}" for k, v in d.items() if v is not None)
+                rows.append(
+                    [cell(e.get("timestamp")), cell(e.get("event")), cell(e.get("object")), cell(details)]
+                )
+                records.append(e)
+            return cols, rows, records
+        if category == "encryptedbuffers" and isinstance(data, list):
+            cols = [("Process", 160), ("PID", 60), ("API", 150), ("Info", 90), ("Buffer", 600)]
+            rows, records = [], []
+            for e in data:
+                info = e.get("buffer_size") or e.get("crypt_key") or ""
+                rows.append(
+                    [cell(e.get("process_name")), cell(e.get("pid")), cell(e.get("api_call")),
+                     cell(info), cell(e.get("buffer"))]
+                )
+                records.append(e)
+            return cols, rows, records
+        if category == "anomaly" and isinstance(data, list):
+            cols = [("Process", 160), ("PID", 60), ("Category", 120), ("Function", 160), ("Message", 500)]
+            rows, records = [], []
+            for e in data:
+                rows.append(
+                    [cell(e.get("name")), cell(e.get("pid")), cell(e.get("category")),
+                     cell(e.get("funcname")), cell(e.get("message"))]
+                )
+                records.append(e)
+            return cols, rows, records
+        # Generic fallbacks for any future category.
+        if isinstance(data, dict):
+            cols = [("Type", 160), ("Value", 820)]
+            rows, records = [], []
+            for key, val in data.items():
+                for item in (val if isinstance(val, list) else [val]):
+                    rows.append([cell(key), cell(item)])
+                    records.append({key: item})
+            return cols, rows, records
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            keys = list(data[0].keys())
+            cols = [(k, 200) for k in keys]
+            rows, records = [], []
+            for e in data:
+                rows.append([cell(e.get(k)) for k in keys])
+                records.append(e)
+            return cols, rows, records
+        return None, [], []
+
+    def _ResetCategoryGrid(self, columns):
+        grid = self.categoryGrid
+        if grid.GetNumberRows() > 0:
+            grid.DeleteRows(0, grid.GetNumberRows())
+        cur = grid.GetNumberCols()
+        need = len(columns)
+        if need > cur:
+            grid.AppendCols(need - cur)
+        elif need < cur:
+            grid.DeleteCols(need, cur - need)
+        for col, (label, width) in enumerate(columns):
+            grid.SetColLabelValue(col, label)
+            grid.SetColSize(col, width)
+
+    def _ShadeCategoryGrid(self):
+        for row in range(self.categoryGrid.GetNumberRows()):
+            if row % 2 == 0:
+                attr = gridlib.GridCellAttr()
+                attr.SetBackgroundColour(GRID_ROW_ALT)
+                self.categoryGrid.SetRowAttr(row, attr)
+        self.categoryGrid.ForceRefresh()
+
+    def _SetCategoryDetail(self, text):
+        text = str(text).replace("\x00", "")
+        if len(text) > CATEGORY_DETAIL_CAP:
+            text = text[:CATEGORY_DETAIL_CAP] + f"\n... [truncated, {len(text)} chars total] ..."
+        self.categoryDetail.SetValue(text)
+
+    def BuildCategoryView(self, category, data):
+        # Cleared first so a stale record cannot be read if a select event fires mid-rebuild.
+        self._categoryRows = []
+        columns, rows, records = self._CategoryRows(category, data)
+        if columns is None:
+            self._ResetCategoryGrid([])
+            self._SetCategoryDetail(self.ViewData(data))
+            return
+        self._ResetCategoryGrid(columns)
+        total = len(rows)
+        rows = rows[:CATEGORY_ROW_CAP]
+        records = records[:CATEGORY_ROW_CAP]
+        if rows:
+            self.categoryGrid.AppendRows(len(rows))
+            for r, row in enumerate(rows):
+                for c, value in enumerate(row):
+                    self.categoryGrid.SetCellValue(r, c, value)
+        self._categoryRows = records
+        self._ShadeCategoryGrid()
+        if not total:
+            self._SetCategoryDetail("No entries for this category.")
+        elif total > CATEGORY_ROW_CAP:
+            self._SetCategoryDetail(
+                f"Showing first {CATEGORY_ROW_CAP} of {total} entries. Select a row for details."
+            )
+        else:
+            self._SetCategoryDetail("Select a row for details.")
+
+    def OnCategoryRowSelect(self, event):
+        row = event.GetRow()
+        if 0 <= row < len(self._categoryRows):
+            self._SetCategoryDetail(self.ViewData(self._categoryRows[row]))
+        event.Skip()
 
     def GetProcBehavior(self, pid):
         for proc in self.results.get("behavior", {}).get("processes", []):
