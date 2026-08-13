@@ -34,6 +34,26 @@ MAX_STRINGS = 100_000        # cap on strings pulled into the search index
 DETAIL_STRINGS = 2000        # cap on strings shown in a payload detail pane
 PLAINTEXT_BLOCK = 8000       # cap on a decrypted request/response block shown in Network
 CALLS_CAP = 5000             # cap on per-process API calls shown in the Processes tab
+# Light-theme row tints for API-call categories (report_viewer uses the light ttk theme, so the
+# wx app's dark BEHAVIOR_CATEGORY_COLORS are not reused). Unmapped categories get no tint.
+CALL_CATEGORY_COLORS = {
+    "filesystem": "#ffe8cc",
+    "registry": "#ffd6d6",
+    "process": "#dbe6ff",
+    "threading": "#cfe8ff",
+    "services": "#e8d9ff",
+    "device": "#f3d9e8",
+    "network": "#d9f5d9",
+    "socket": "#d9f5e2",
+    "synchronization": "#ecd9ff",
+    "browser": "#d9f5ea",
+    "crypto": "#f5f0c2",
+    "system": "#f7f1cf",
+    "hooking": "#e4e4e4",
+    "misc": "#eeeeee",
+    "com": "#d6f0f5",
+    "windows": "#f0e2d0",
+}
 DEFAULT_REPORT = os.path.join(os.path.expanduser("~"), "Desktop", "report.json")
 
 
@@ -206,13 +226,36 @@ class ReportViewer:
         # Right side: process metadata over a per-process API-call table (like the Behavior tab).
         rpane = ttk.PanedWindow(pane, orient=tk.VERTICAL)
         dframe, self.proc_detail = self._detail_text(rpane)
+        callsFrame = ttk.Frame(rpane)
+        bar = ttk.Frame(callsFrame)
+        bar.pack(fill=tk.X, padx=2, pady=2)
+        ttk.Label(bar, text="Category:").pack(side=tk.LEFT)
+        self.call_cat = ttk.Combobox(bar, state="readonly", width=16, values=["all"])
+        self.call_cat.set("all")
+        self.call_cat.pack(side=tk.LEFT, padx=(2, 8))
+        self.call_cat.bind("<<ComboboxSelected>>", lambda e: self._apply_call_filters())
+        ttk.Label(bar, text="TID:").pack(side=tk.LEFT)
+        self.call_tid = ttk.Entry(bar, width=8)
+        self.call_tid.pack(side=tk.LEFT, padx=(2, 8))
+        self.call_tid.bind("<Return>", lambda e: self._apply_call_filters())
+        ttk.Label(bar, text="API:").pack(side=tk.LEFT)
+        self.call_api = ttk.Entry(bar, width=20)
+        self.call_api.pack(side=tk.LEFT, padx=(2, 8))
+        self.call_api.bind("<Return>", lambda e: self._apply_call_filters())
+        ttk.Button(bar, text="Clear", command=self._clear_call_filters).pack(side=tk.LEFT)
+        self.call_status = ttk.Label(bar, text="")
+        self.call_status.pack(side=tk.RIGHT)
         cframe, self.proc_calls = self._table(
-            rpane, ("Time", "TID", "Caller", "API", "Arguments", "Status", "Return"),
+            callsFrame, ("Time", "TID", "Caller", "API", "Arguments", "Status", "Return"),
             {"Time": 150, "TID": 60, "Caller": 130, "API": 160, "Arguments": 320,
              "Status": 60, "Return": 90},
         )
+        cframe.pack(fill=tk.BOTH, expand=True)
+        for cat, color in CALL_CATEGORY_COLORS.items():
+            self.proc_calls.tag_configure(cat, background=color)
+        self._proc_calls_all = []
         rpane.add(dframe, weight=1)
-        rpane.add(cframe, weight=3)
+        rpane.add(callsFrame, weight=3)
         pane.add(tframe, weight=2)
         pane.add(rpane, weight=5)
         self._add_tab(pane, "Processes", "Processes")
@@ -509,11 +552,41 @@ class ReportViewer:
         for call in calls[:CALLS_CAP]:
             status = "Success" if call.get("status") else "Failure"
             ret = call.get("pretty_return") or call.get("return", "")
-            self.proc_calls.insert("", "end", values=(
+            cat = call.get("category")
+            tags = (cat,) if cat in CALL_CATEGORY_COLORS else ()
+            self.proc_calls.insert("", "end", tags=tags, values=(
                 cell(call.get("timestamp", "")), cell(call.get("thread_id", "")),
                 cell(call.get("caller", "")), cell(call.get("api", "")),
                 cell(self._call_arguments(call)), cell(status), cell(ret),
             ))
+
+    def _clear_call_filters(self):
+        self.call_cat.set("all")
+        self.call_tid.delete(0, tk.END)
+        self.call_api.delete(0, tk.END)
+        self._apply_call_filters()
+
+    def _apply_call_filters(self):
+        # Deviates from the Behavior tab on purpose: filters COMBINE (AND) rather than being
+        # mutually exclusive, and TID/API are case-insensitive substring matches rather than
+        # exact - friendlier for triage. str()-normalize since report data is external.
+        cat = self.call_cat.get()
+        tid = self.call_tid.get().strip().lower()
+        api = self.call_api.get().strip().lower()
+        matched = []
+        for call in self._proc_calls_all:
+            if cat and cat != "all" and call.get("category") != cat:
+                continue
+            if tid and tid not in str(call.get("thread_id", "")).lower():
+                continue
+            if api and api not in str(call.get("api", "")).lower():
+                continue
+            matched.append(call)
+        self._fill_proc_calls(matched)
+        shown = min(len(matched), CALLS_CAP)
+        self.call_status.config(
+            text=f"displaying {shown} of {len(matched)} matched ({len(self._proc_calls_all)} total)"
+        )
 
     def _on_proc_select(self, event):
         sel = self.proc_tree.selection()
@@ -531,7 +604,6 @@ class ReportViewer:
         # json_report accretion fix these calls are this process's own; a pre-fix report.json
         # still has every process carrying the identical accreted list.
         proc = self._proc_by_pid.get(node.get("pid"))
-        self.proc_calls.delete(*self.proc_calls.get_children())
         if proc:
             cmdline = (proc.get("environ") or {}).get("CommandLine")
             if cmdline:
@@ -539,16 +611,18 @@ class ReportViewer:
             if proc.get("first_seen") not in (None, ""):
                 lines.append(f"first_seen: {proc.get('first_seen')}")
             lines.append(f"threads: {len(proc.get('threads') or node.get('threads') or [])}")
-            calls = proc.get("calls") or []
-            if len(calls) > CALLS_CAP:
-                lines.append(f"calls: showing first {CALLS_CAP} of {len(calls)}")
-            else:
-                lines.append(f"calls: {len(calls)}")
-            self._fill_proc_calls(calls)
+            self._proc_calls_all = proc.get("calls") or []
         else:
             lines.append(f"threads: {len(node.get('threads') or [])}")
             lines.append("calls: (no matching process record in report.json)")
+            self._proc_calls_all = []
         self._set_text(self.proc_detail, "\n".join(lines))
+        # Category options come from the categories actually present in this process's calls.
+        cats = sorted({c.get("category") for c in self._proc_calls_all if c.get("category")})
+        self.call_cat.config(values=["all"] + cats)
+        if self.call_cat.get() not in (["all"] + cats):
+            self.call_cat.set("all")
+        self._apply_call_filters()
 
     # ------------------------------------------------------------------ Network
     def _build_network(self):
