@@ -44,19 +44,15 @@ def BehaviorResults(analysisDir):
     behavior.set_options(options)
     results = behavior.run()
 
-    mycalls = []
-    procs = results.get("processes", [])
-    n = 0
-    for proc in procs:
+    # Materialise each process's OWN lazy calls (ParseProcessLog) into a plain, JSON-serialisable
+    # list. A prior version shared one accumulator across processes, so every process ended up
+    # with the cumulative calls of all processes - which made report.json's per-process calls
+    # (and any per-process signature reading them) unusable.
+    for proc in results.get("processes", []):
         try:
-            for call in proc.get("calls", []):
-                mycalls.append(call)
-
-            procs[n]["calls"] = mycalls
+            proc["calls"] = list(proc.get("calls", []))
         except Exception:
             return None
-
-        n += 1
 
     return results
 

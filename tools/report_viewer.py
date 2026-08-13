@@ -33,6 +33,7 @@ MAX_INDEX = 300_000          # cap on global-search index entries
 MAX_STRINGS = 100_000        # cap on strings pulled into the search index
 DETAIL_STRINGS = 2000        # cap on strings shown in a payload detail pane
 PLAINTEXT_BLOCK = 8000       # cap on a decrypted request/response block shown in Network
+CALLS_CAP = 5000             # cap on per-process API calls shown in the Processes tab
 DEFAULT_REPORT = os.path.join(os.path.expanduser("~"), "Desktop", "report.json")
 
 
@@ -202,9 +203,18 @@ class ReportViewer:
         tframe.columnconfigure(0, weight=1)
         self.proc_tree.bind("<<TreeviewSelect>>", self._on_proc_select)
         self._proc_pid = {}
-        dframe, self.proc_detail = self._detail_text(pane)
+        # Right side: process metadata over a per-process API-call table (like the Behavior tab).
+        rpane = ttk.PanedWindow(pane, orient=tk.VERTICAL)
+        dframe, self.proc_detail = self._detail_text(rpane)
+        cframe, self.proc_calls = self._table(
+            rpane, ("Time", "TID", "Caller", "API", "Arguments", "Status", "Return"),
+            {"Time": 150, "TID": 60, "Caller": 130, "API": 160, "Arguments": 320,
+             "Status": 60, "Return": 90},
+        )
+        rpane.add(dframe, weight=1)
+        rpane.add(cframe, weight=3)
         pane.add(tframe, weight=2)
-        pane.add(dframe, weight=3)
+        pane.add(rpane, weight=5)
         self._add_tab(pane, "Processes", "Processes")
 
     def _build_network_tab(self):
@@ -463,8 +473,12 @@ class ReportViewer:
     # ------------------------------------------------------------------ Processes
     def _build_processes(self):
         self.proc_tree.delete(*self.proc_tree.get_children())
+        self.proc_calls.delete(*self.proc_calls.get_children())
         self._proc_node = {}
         beh = self.report.get("behavior") or {}
+        # calls / environ / first_seen / threads live on behavior.processes, keyed by pid; the
+        # tree comes from processtree. Map pid -> process to join them on selection.
+        self._proc_by_pid = {p.get("process_id"): p for p in (beh.get("processes") or [])}
         roots = beh.get("processtree") or []
         if not roots:
             self.proc_tree.insert("", "end", text="(no process tree)")
@@ -479,12 +493,32 @@ class ReportViewer:
         for child in node.get("children") or []:
             self._add_proc(child, item)
 
+    @staticmethod
+    def _call_arguments(call):
+        args = call.get("arguments") or []
+        # Flat single-line form for a Treeview row (behavior_panel.GetArguments wraps at 64 chars
+        # for a multi-line grid cell, which is wrong here).
+        return "; ".join(f"{a.get('name', '')}={a.get('value', '')}" for a in args if isinstance(a, dict))
+
+    def _fill_proc_calls(self, calls):
+        self.proc_calls.delete(*self.proc_calls.get_children())
+
+        def cell(value):
+            return _preview(str(value).replace("\x00", ""))
+
+        for call in calls[:CALLS_CAP]:
+            status = "Success" if call.get("status") else "Failure"
+            ret = call.get("pretty_return") or call.get("return", "")
+            self.proc_calls.insert("", "end", values=(
+                cell(call.get("timestamp", "")), cell(call.get("thread_id", "")),
+                cell(call.get("caller", "")), cell(call.get("api", "")),
+                cell(self._call_arguments(call)), cell(status), cell(ret),
+            ))
+
     def _on_proc_select(self, event):
         sel = self.proc_tree.selection()
         if not sel:
             return
-        # The processtree node carries the metadata directly (name/pid/parent_id/module_path/
-        # threads); don't touch behavior.processes[].calls (cumulatively accreted, unreliable).
         node = self._proc_node.get(sel[0])
         if not node:
             self._set_text(self.proc_detail, "")
@@ -493,7 +527,27 @@ class ReportViewer:
         for k in ("name", "pid", "parent_id", "module_path"):
             if node.get(k) not in (None, ""):
                 lines.append(f"{k}: {node.get(k)}")
-        lines.append(f"threads: {len(node.get('threads') or [])}")
+        # Join to behavior.processes for the richer fields and the per-process calls. As of the
+        # json_report accretion fix these calls are this process's own; a pre-fix report.json
+        # still has every process carrying the identical accreted list.
+        proc = self._proc_by_pid.get(node.get("pid"))
+        self.proc_calls.delete(*self.proc_calls.get_children())
+        if proc:
+            cmdline = (proc.get("environ") or {}).get("CommandLine")
+            if cmdline:
+                lines.append(f"command line: {cmdline}")
+            if proc.get("first_seen") not in (None, ""):
+                lines.append(f"first_seen: {proc.get('first_seen')}")
+            lines.append(f"threads: {len(proc.get('threads') or node.get('threads') or [])}")
+            calls = proc.get("calls") or []
+            if len(calls) > CALLS_CAP:
+                lines.append(f"calls: showing first {CALLS_CAP} of {len(calls)}")
+            else:
+                lines.append(f"calls: {len(calls)}")
+            self._fill_proc_calls(calls)
+        else:
+            lines.append(f"threads: {len(node.get('threads') or [])}")
+            lines.append("calls: (no matching process record in report.json)")
         self._set_text(self.proc_detail, "\n".join(lines))
 
     # ------------------------------------------------------------------ Network
