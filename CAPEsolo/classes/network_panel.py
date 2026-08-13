@@ -77,7 +77,14 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
         hboxTop.Add(self.kindDropdown, proportion=1, flag=wx.EXPAND)
         vbox.Add(hboxTop, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
-        self.grid = CopyableGrid(self, 0, 7)
+        # List and detail live in a splitter so a long capture list cannot squeeze the detail
+        # pane out: a grid's best size is all-rows tall, which otherwise wins in a box sizer and
+        # the frame is capped at 75% of screen height. The user drags the sash to rebalance.
+        self.splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3DSASH)
+        self.splitter.SetMinimumPaneSize(80)
+        self.splitter.SetSashGravity(0.7)
+
+        self.grid = CopyableGrid(self.splitter, 0, 7)
         for col, label in enumerate(
             ("Time", "Kind", "Source", "Destination", "Keys", "Seen", "Info")
         ):
@@ -92,14 +99,10 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
         self.grid.EnableEditing(False)
         self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self.OnSelectCell)
         self.grid.Hide()
-        vbox.Add(
-            self.grid,
-            proportion=2,
-            flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
-        )
 
-        self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
+        self.resultsWindow = wx.TextCtrl(
+            self.splitter, style=wx.TE_MULTILINE | wx.TE_READONLY
+        )
         self.resultsWindow.SetFont(FONT_CODE)
         self.resultsWindow.SetValue(
             "Select a pcapng captured outside the guest, then process it.\n\n"
@@ -107,8 +110,11 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
             "lsass, for Schannel) and aux_/sslkeylogfile/sslkeys.log. They are merged into\n"
             "one Wireshark-readable key log, and each TLS session is matched against it."
         )
+        # Only the detail pane shows until a capture is processed; the grid is split in on top
+        # in ProcessCapture.
+        self.splitter.Initialize(self.resultsWindow)
         vbox.Add(
-            self.resultsWindow,
+            self.splitter,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
             border=5,
@@ -187,7 +193,11 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
         )
         self.rows.sort(key=lambda row: (row.get("time") or 0.0))
         self.LoadKindFilter()
-        self.grid.Show()
+        if not self.splitter.IsSplit():
+            self.grid.Show()
+            height = self.splitter.GetClientSize().height
+            sash = int(height * 0.6) if height > 200 else 300
+            self.splitter.SplitHorizontally(self.grid, self.resultsWindow, sash)
         self.AddTableData()
 
     def LoadKindFilter(self, selected=ALL_KINDS):
