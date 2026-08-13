@@ -29,14 +29,22 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
 Revert the VM after each analysis.
 
 View a JSON Report (standalone)
-* `tools/report_viewer.py` is a self-contained viewer for a CAPEsolo `report.json` that runs on
-  any host with just Python - no CAPEsolo install and no pip dependencies (stdlib tkinter).
+* `tools/report_viewer.py` is a self-contained triage viewer for a CAPEsolo `report.json` that
+  runs on any host with just Python - no CAPEsolo install and no pip dependencies (stdlib tkinter).
   * `python tools/report_viewer.py [path\to\report.json]`
   * With no argument it opens `%USERPROFILE%\Desktop\report.json` (where CAPEsolo writes it);
     use File > Open to pick another.
-  * Handles large reports: the file is read with a progress bar, the tree loads lazily (children
-    on expand), and the detail pane is bounded, so it stays responsive on hundred-MB/GB reports.
-    (A GB report still needs several GB of RAM to parse - inherent to Python's JSON.)
+  * Triage tabs: Overview (verdict card - file hashes, detections, top signatures, config, counts),
+    Signatures (severity-sorted, colored, with per-process evidence), Processes (the process tree
+    with per-process metadata), Network (DNS/HTTP/Hosts/Domains/Flows), Payloads (with yara hits
+    and strings), and IOCs (aggregated, with Copy / Export CSV / Export text).
+  * The Search box (top bar) finds a value across signatures, network, payloads, configs, IOCs and
+    strings, and jumps to the owning tab.
+  * A Raw JSON tab keeps the full tree for anything the triage tabs do not surface.
+  * Handles large reports: the file is read with a progress bar, the raw tree loads lazily
+    (children on expand), and the detail panes are bounded, so it stays responsive on
+    hundred-MB/GB reports. (A GB report still needs several GB of RAM to parse - inherent to
+    Python's JSON.)
   * Needs tkinter - bundled with the standard Windows/macOS Python; on Linux install `python3-tk`.
 
 Preserve Results From an Unstable VM
