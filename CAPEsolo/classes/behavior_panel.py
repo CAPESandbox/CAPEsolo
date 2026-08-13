@@ -44,16 +44,26 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.behaviorButton.Disable()
         vbox.Add(self.behaviorButton, proportion=0, border=5)
 
-        self.hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.categoryDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
-        self.hbox.Add(
-            self.categoryDropdown, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5
+        self.categoryPane = wx.CollapsiblePane(self, label="Behavior Categories")
+        self.categoryPane.Bind(
+            wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnCategoryPaneChanged
         )
-        self.categoryDropdown.Bind(wx.EVT_COMBOBOX, self.OnCatView)
         vbox.Add(
-            wx.StaticText(self, label="Categories:"), flag=wx.LEFT | wx.TOP, border=5
+            self.categoryPane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5
         )
-        vbox.Add(self.hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        catPane = self.categoryPane.GetPane()
+        catBox = wx.BoxSizer(wx.VERTICAL)
+        self.categoryDropdown = wx.ComboBox(catPane, style=wx.CB_READONLY)
+        self.categoryDropdown.Bind(wx.EVT_COMBOBOX, self.OnCatView)
+        catBox.Add(self.categoryDropdown, 0, flag=wx.EXPAND | wx.ALL, border=5)
+        self.categoryResults = wx.TextCtrl(
+            catPane, style=wx.TE_MULTILINE | wx.TE_READONLY
+        )
+        self.categoryResults.SetMinSize((-1, 250))
+        self.categoryResults.SetValue("Select a category to view its data.")
+        catBox.Add(self.categoryResults, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        catPane.SetSizer(catBox)
+
         self.procTreePane = wx.CollapsiblePane(self, label="Process Tree")
         self.procTreePane.Bind(
             wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnProcTreePaneChanged
@@ -215,10 +225,12 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         self.SetSizer(vbox)
         vbox.Fit(self)
-        # CollapsiblePane starts collapsed; expand it and lay out once so the tree shows by
-        # default (mirrors the analysis.conf pane in start_panel.py).
+        # CollapsiblePanes start collapsed. Show the Process Tree by default and keep Behavior
+        # Categories collapsed; the two form an accordion. Set both states explicitly -
+        # programmatic Collapse() does not fire EVT_COLLAPSIBLEPANE_CHANGED.
+        self.categoryPane.Collapse(True)
         self.procTreePane.Collapse(False)
-        self.OnProcTreePaneChanged(None)
+        self.Layout()
         apply_theme(self)
 
     def OnMax(self, event):
@@ -305,6 +317,15 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.procTree.Expand(item)
 
     def OnProcTreePaneChanged(self, event):
+        # Accordion: expanding the Process Tree collapses Behavior Categories. Programmatic
+        # Collapse() fires no event, and the IsExpanded() guard makes this recursion-proof.
+        if self.procTreePane.IsExpanded():
+            self.categoryPane.Collapse(True)
+        self.Layout()
+
+    def OnCategoryPaneChanged(self, event):
+        if self.categoryPane.IsExpanded():
+            self.procTreePane.Collapse(True)
         self.Layout()
 
     def OnProcTreeTooltip(self, event):
@@ -366,10 +387,9 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             )
             return
         results = self.GetCatBehavior(selectedCategory)
-        self.Display(results, selectedCategory)
-        if isinstance(self.GetParent(), wx.Frame):
-            self.GetParent().Fit()
-            self.GetParent().Layout()
+        # Category output has its own box now, decoupled from the process-details window.
+        self.categoryResults.SetValue(self.ViewData(results))
+        self.Layout()
 
     def GetCatBehavior(self, category):
         results = self.results.get("behavior", {}).get(category) or "No results"
@@ -439,10 +459,6 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.Layout()
             self.ViewProcess(data)
             self.ApplyAlternateRowShading()
-        else:
-            height = 15 * self.resultsWindow.GetCharHeight()
-            self.resultsWindow.SetSizeHints(-1, -1, -1, height)
-            self.resultsWindow.SetValue(self.ViewData(data))
 
     def GetCmdLine(self, cmdline, modulepath):
         if cmdline.startswith('"') and '"' in cmdline[1:]:

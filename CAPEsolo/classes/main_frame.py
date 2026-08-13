@@ -55,6 +55,9 @@ class ConfigReader:
 class MainFrame(wx.Frame):
     def __init__(self, rootDir=None, *args, **kwargs):
         self.capesoloRoot = rootDir
+        # Popped before super(): wx.Frame does not accept it. Set by cli.CapesoloApp when a
+        # restore.zip was extracted this launch, so InitUi can announce it in the status bar.
+        restored = kwargs.pop("restored", False)
         self.version = Path("version.txt").read_text()
         kwargs["title"] = f"Capesolo - v{self.version}"
         super(MainFrame, self).__init__(*args, **kwargs)
@@ -62,6 +65,8 @@ class MainFrame(wx.Frame):
         self.GetConfig()
         self.CreateAnalysisDirectory()
         self.InitUi()
+        if restored:
+            self.statusBar.SetMessage("Restored analysis from restore.zip")
         self.Bind(wx.EVT_CLOSE, self.OnClose)
 
     def InitUi(self):

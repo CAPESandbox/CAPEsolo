@@ -68,6 +68,12 @@ MUTEX_NAME = "solo_mutex"
 
 
 class CapesoloApp(wx.App):
+    def __init__(self, restored=False, *args, **kwargs):
+        # Whether _restore_results() extracted a restore.zip this launch; surfaced in the
+        # status bar once the frame is built.
+        self.restored = restored
+        super().__init__(*args, **kwargs)
+
     def OnInit(self):
         hWnd = windll.kernel32.GetConsoleWindow()
         windll.user32.ShowWindow(hWnd, 6)
@@ -81,7 +87,8 @@ class CapesoloApp(wx.App):
             frameWidth = 710
 
         frame = MainFrame(
-            rootDir=CAPESOLO_ROOT, parent=None, size=wx.Size(frameWidth, frameHeight)
+            rootDir=CAPESOLO_ROOT, parent=None, size=wx.Size(frameWidth, frameHeight),
+            restored=self.restored,
         )
         frameX = int(screenWidth * 0.01)
         frameY = int(screenHeight * 0.02)
@@ -119,7 +126,8 @@ def _restore_results():
     """Restore a preserved analysis into a clean/reverted VM: if a results zip has been dropped at
     %PUBLIC%\\CAPEsolo\\restore.zip and the analysis directory has no analysis yet, extract it so the
     tabs read it on startup. Renamed to restore.zip.done afterwards so it restores once. Best-effort
-    - a bad zip or read-only dir must never block startup."""
+    - a bad zip or read-only dir must never block startup. Returns True if an analysis was
+    extracted, else False."""
     import configparser
     import zipfile
 
@@ -127,7 +135,7 @@ def _restore_results():
 
     restore_zip = user_config_path().parent / "restore.zip"
     if not restore_zip.is_file():
-        return
+        return False
 
     config = configparser.ConfigParser()
     with suppress(configparser.Error, OSError):
@@ -137,16 +145,17 @@ def _restore_results():
     )
     # Never clobber an existing analysis.
     if any(analysis_dir.glob("s_*")):
-        return
+        return False
 
     try:
         analysis_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(str(restore_zip)) as archive:
             archive.extractall(str(analysis_dir))
     except Exception:
-        return
+        return False
     with suppress(OSError):
         restore_zip.rename(restore_zip.with_suffix(".zip.done"))
+    return True
 
 
 def main():
@@ -278,8 +287,8 @@ def main():
 
         # GUI-only (headless/update-yara returned above): restore a preserved analysis before the
         # frame reads the analysis directory.
-        _restore_results()
-        app = CapesoloApp()
+        restored = _restore_results()
+        app = CapesoloApp(restored=restored)
         app.MainLoop()
         return 0
     finally:
