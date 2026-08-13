@@ -54,16 +54,27 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             wx.StaticText(self, label="Categories:"), flag=wx.LEFT | wx.TOP, border=5
         )
         vbox.Add(self.hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
-        self.hbox2 = wx.BoxSizer(wx.HORIZONTAL)
-        self.processDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
-        self.hbox2.Add(
-            self.processDropdown, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5
+        self.procTreePane = wx.CollapsiblePane(self, label="Process Tree")
+        self.procTreePane.Bind(
+            wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnProcTreePaneChanged
         )
-        self.processDropdown.Bind(wx.EVT_COMBOBOX, self.OnProcView)
         vbox.Add(
-            wx.StaticText(self, label="Processes:"), flag=wx.LEFT | wx.TOP, border=5
+            self.procTreePane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5
         )
-        vbox.Add(self.hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        treePane = self.procTreePane.GetPane()
+        treeBox = wx.BoxSizer(wx.VERTICAL)
+        self.procTree = wx.TreeCtrl(
+            treePane,
+            style=wx.TR_DEFAULT_STYLE
+            | wx.TR_HIDE_ROOT
+            | wx.TR_HAS_BUTTONS
+            | wx.TR_LINES_AT_ROOT,
+        )
+        self.procTree.SetMinSize((-1, 200))
+        self.procTree.Bind(wx.EVT_TREE_SEL_CHANGED, self.OnProcTreeSelect)
+        self.procTree.Bind(wx.EVT_TREE_ITEM_GETTOOLTIP, self.OnProcTreeTooltip)
+        treeBox.Add(self.procTree, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        treePane.SetSizer(treeBox)
 
         self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
         vbox.Add(
@@ -204,6 +215,10 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         self.SetSizer(vbox)
         vbox.Fit(self)
+        # CollapsiblePane starts collapsed; expand it and lay out once so the tree shows by
+        # default (mirrors the analysis.conf pane in start_panel.py).
+        self.procTreePane.Collapse(False)
+        self.OnProcTreePaneChanged(None)
         apply_theme(self)
 
     def OnMax(self, event):
@@ -250,34 +265,93 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             behavior.set_options(options)
             self.results["behavior"] = behavior.run()
             self.LoadResultCategories()
-            self.LoadResultProcesses()
+            self.BuildProcessTree()
             self.behaviorButton.Disable()
 
         self.tidButton.Enable()
         self.apiFilterButton.Enable()
         self.behaviorComplete = True
 
-    def LoadResultProcesses(self):
-        processes = self.results.get("behavior", {}).get("processes", [])
-        self.processDropdown.Append("<Select process>")
-        self.processDropdown.SetSelection(0)
-        for process in processes:
-            proc = (
-                f'{process.get("process_id", "")}:{process.get("process_name", None)}'
+    def BuildProcessTree(self):
+        # Guard the selection handler: DeleteAllItems fires EVT_TREE_SEL_CHANGED with an
+        # invalid item on MSW, which would otherwise run mid-rebuild.
+        self._buildingTree = True
+        try:
+            self.procTree.DeleteAllItems()
+            root = self.procTree.AddRoot("Processes")
+            tree = self.results.get("behavior", {}).get("processtree", [])
+            self._AddProcNodes(root, tree)
+        finally:
+            self._buildingTree = False
+        # Select the first top-level process so the details and call grid populate on load,
+        # the way the pre-selected "processtree" category used to fill the panel. Drive the
+        # display directly rather than via the selection event: appending the first item can
+        # auto-select it on MSW, so an explicit SelectItem may not fire EVT_TREE_SEL_CHANGED.
+        firstChild, _ = self.procTree.GetFirstChild(self.procTree.GetRootItem())
+        if firstChild.IsOk():
+            self.procTree.SelectItem(firstChild)
+            node = self.procTree.GetItemData(firstChild)
+            if node:
+                self._ShowProcNode(node)
+
+    def _AddProcNodes(self, parentItem, nodes):
+        for node in nodes or []:
+            item = self.procTree.AppendItem(
+                parentItem, f'{node.get("name")} ({node.get("pid")})'
             )
-            self.processDropdown.Append(proc)
+            self.procTree.SetItemData(item, node)
+            self._AddProcNodes(item, node.get("children", []))
+            # Only real nodes are expanded; expanding the hidden root raises on wx.
+            self.procTree.Expand(item)
+
+    def OnProcTreePaneChanged(self, event):
+        self.Layout()
+
+    def OnProcTreeTooltip(self, event):
+        node = self.procTree.GetItemData(event.GetItem())
+        if not node:
+            return
+        modulepath = node.get("module_path", "") or ""
+        cmdline = node.get("environ", {}).get("CommandLine", "")
+        if cmdline:
+            cmdline = self.GetCmdLine(cmdline, modulepath)
+        if modulepath and cmdline:
+            event.SetToolTip(f"{modulepath}\n{cmdline}")
+        elif modulepath or cmdline:
+            event.SetToolTip(modulepath or cmdline)
+
+    def OnProcTreeSelect(self, event):
+        if getattr(self, "_buildingTree", False):
+            return
+        item = event.GetItem()
+        if not item.IsOk():
+            return
+        node = self.procTree.GetItemData(item)
+        if node:
+            self._ShowProcNode(node)
+
+    def _ShowProcNode(self, node):
+        proc = self.GetProcBehavior(node.get("pid"))
+        if proc is None:
+            # A process seen only in the tree (e.g. a parent with no logged calls): show what
+            # the node carries and leave the call grid empty.
+            proc = {
+                "process_id": node.get("pid"),
+                "process_name": node.get("name"),
+                "parent_id": node.get("parent_id"),
+                "module_path": node.get("module_path"),
+                "calls": [],
+            }
+        self.Display(proc, "process")
 
     def LoadResultCategories(self):
         categories = self.results.get("behavior", {}).keys()
         self.categoryDropdown.Append("<Select category>")
         self.categoryDropdown.SetSelection(0)
+        # "processtree" now has its own tree widget; "processes" is the raw per-process list.
         for category in categories:
-            if "processes" not in category:
+            if category not in ("processes", "processtree"):
                 self.categoryDropdown.Append(category)
-        # Pre-select and show the process tree by default when it is available.
-        if "processtree" in categories:
-            self.categoryDropdown.SetStringSelection("processtree")
-            self.OnCatView(None)
 
     def OnCatView(self, event):
         selectedCategory = self.categoryDropdown.GetValue()
@@ -297,27 +371,15 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.GetParent().Fit()
             self.GetParent().Layout()
 
-    def OnProcView(self, event):
-        selectedProcess = self.processDropdown.GetValue()
-        if not selectedProcess or selectedProcess == "<Select process>":
-            wx.MessageBox(
-                "Please select a process dropdown.",
-                "No Process Selected",
-                wx.OK | wx.ICON_WARNING,
-            )
-            return
-        results = self.GetProcBehavior(selectedProcess)
-        self.Display(results, "process")
-
     def GetCatBehavior(self, category):
         results = self.results.get("behavior", {}).get(category) or "No results"
         return results
 
-    def GetProcBehavior(self, process):
-        pid = process.split(":")[0]
+    def GetProcBehavior(self, pid):
         for proc in self.results.get("behavior", {}).get("processes", []):
-            if int(pid) == proc.get("process_id"):
+            if pid == proc.get("process_id"):
                 return proc
+        return None
 
     def ViewData(self, data, indent=0, depthLimit=10):
         lines = []
@@ -377,10 +439,6 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.Layout()
             self.ViewProcess(data)
             self.ApplyAlternateRowShading()
-        elif dataType == "processtree":
-            height = 15 * self.resultsWindow.GetCharHeight()
-            self.resultsWindow.SetSizeHints(-1, -1, -1, height)
-            self.ViewProcessTree(data)
         else:
             height = 15 * self.resultsWindow.GetCharHeight()
             self.resultsWindow.SetSizeHints(-1, -1, -1, height)
@@ -402,23 +460,6 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             cmdline = cmdline[:200] + " ...(truncated)"
 
         return convert_to_printable(cmdline)
-
-    def PrintProcessTree(self, processes, indent=0):
-        processInfo = ""
-        for process in processes:
-            modulepath = process.get("module_path", "")
-            cmdline = process.get("environ", {}).get("CommandLine", "")
-            if cmdline:
-                cmdline = self.GetCmdLine(cmdline, modulepath)
-            processInfo += f'{" " * indent}\u2022 {process.get("name")} {process.get("pid")} {cmdline}\n'
-            for child in process.get("children", []):
-                processInfo += self.PrintProcessTree([child], indent + 4)
-
-        return processInfo
-
-    def ViewProcessTree(self, data):
-        output = self.PrintProcessTree(data)
-        self.resultsWindow.SetValue(output)
 
     def ViewProcess(self, data):
         output = [
