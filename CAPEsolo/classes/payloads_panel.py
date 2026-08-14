@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import wx
@@ -142,6 +143,11 @@ class PayloadsPanel(wx.Panel):
             self.button_to_path[peBtn.GetId()] = path
             buttonBox.Add(peBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
 
+        showBtn = wx.Button(self.panel, label="Show in Explorer")
+        showBtn.Bind(wx.EVT_BUTTON, self.OnShowInExplorer)
+        self.button_to_path[showBtn.GetId()] = path
+        buttonBox.Add(showBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
+
         self.panelsizer.Add(buttonBox, proportion=1, flag=wx.EXPAND)
 
         self.panelsizer.AddSpacer(5)
@@ -257,4 +263,23 @@ class PayloadsPanel(wx.Panel):
         except Exception as e:
             wx.MessageBox(
                 f"Failed to execute the command: {e}", "Error", wx.OK | wx.ICON_ERROR
+            )
+
+    def OnShowInExplorer(self, event):
+        try:
+            path = self.button_to_path.get(event.GetId(), "")
+            if not path:
+                return
+            path = Path(path)
+            if not path.exists():
+                wx.MessageBox(
+                    f"File not found:\n{path}", "Show in Explorer", wx.OK | wx.ICON_WARNING
+                )
+                return
+            # explorer.exe returns exit code 1 even on success, so do not check the result;
+            # /select, highlights the file in its folder. List form avoids shell quoting issues.
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        except Exception as e:
+            wx.MessageBox(
+                f"Failed to open Explorer: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
