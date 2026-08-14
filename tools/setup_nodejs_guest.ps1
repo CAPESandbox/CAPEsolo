@@ -30,6 +30,10 @@
 .PARAMETER SkipNodeInstall
     Node.js is already installed; only do packages + NODE_PATH.
 
+.PARAMETER NodeMsiUrl
+    Explicit Node.js x64 MSI URL used by the no-winget fallback (e.g. a locally hosted MSI for an
+    air-gapped guest). When omitted, the latest LTS MSI is resolved from nodejs.org/dist.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\setup_nodejs_guest.ps1
 
@@ -46,7 +50,8 @@ param(
         'punycode', 'axios', 'request', 'node-fetch', 'socket.io-client', 'ws', 'form-data'
     ),
     [switch] $InstallBun,
-    [switch] $SkipNodeInstall
+    [switch] $SkipNodeInstall,
+    [string] $NodeMsiUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +70,7 @@ if (-not $isAdmin) {
     if ($InstallBun)      { $a += '-InstallBun' }
     if ($SkipNodeInstall) { $a += '-SkipNodeInstall' }
     if ($Packages)        { $a += @('-Packages', ($Packages -join ',')) }
+    if ($NodeMsiUrl)      { $a += @('-NodeMsiUrl', $NodeMsiUrl) }
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $a
     return
 }
@@ -73,6 +79,35 @@ function Update-SessionPath {
     # winget/MSI persist PATH to the registry but not to this process; refresh it.
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Get-LatestLtsNodeMsiUrl {
+    # nodejs.org lists every release in dist/index.json newest-first, each with an 'lts' field
+    # (false, or the codename string for LTS lines). Take the newest LTS and build the x64 MSI URL.
+    $index = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -UseBasicParsing
+    $lts = $index | Where-Object { $_.lts } | Select-Object -First 1
+    if (-not $lts) { throw 'No LTS release found in nodejs.org/dist/index.json.' }
+    return "https://nodejs.org/dist/$($lts.version)/node-$($lts.version)-x64.msi"
+}
+
+function Install-NodeMsi {
+    # No-winget fallback: download the Node.js LTS MSI (or the supplied URL) and install it silently.
+    param([string] $MsiUrl)
+    if (-not $MsiUrl) {
+        Write-Step 'winget not found - resolving the latest Node.js LTS MSI'
+        $MsiUrl = Get-LatestLtsNodeMsiUrl
+    }
+    $msi = Join-Path $env:TEMP ([IO.Path]::GetFileName($MsiUrl))
+    Write-Step "Downloading $([IO.Path]::GetFileName($MsiUrl))"
+    Invoke-WebRequest -Uri $MsiUrl -OutFile $msi -UseBasicParsing
+    Write-Step 'Installing Node.js (silent MSI)'
+    $proc = Start-Process msiexec.exe `
+        -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart') -Wait -PassThru
+    # 3010 = success but a reboot is required; treat it as success.
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+        throw "msiexec failed installing Node.js (exit $($proc.ExitCode))."
+    }
+    Write-Ok "Node.js installed via MSI ($MsiUrl)"
 }
 
 # --- Node.js ---
@@ -88,8 +123,9 @@ if (-not $SkipNodeInstall) {
         Write-Ok 'Node.js installed via winget'
     }
     else {
-        throw ('winget not found and Node.js is not installed. Install the Node.js LTS x64 MSI ' +
-               'from https://nodejs.org, then re-run this script with -SkipNodeInstall.')
+        # No winget: download and silently install the Node.js LTS MSI (or -NodeMsiUrl).
+        Install-NodeMsi -MsiUrl $NodeMsiUrl
+        Update-SessionPath
     }
 }
 
