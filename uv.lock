@@ -114,7 +114,7 @@ wheels = [
 
 [[package]]
 name = "cape-parsers"
-version = "0.1.67"
+version = "0.1.69"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "capstone" },
@@ -128,14 +128,14 @@ dependencies = [
     { name = "unicorn" },
     { name = "yara-python" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b7/bc/ba50bdc94a9f94e2352078dab0cb53e87862f595b531d96eda0180a1d8d9/cape_parsers-0.1.67.tar.gz", hash = "sha256:cc132eea0b74fd9bd5063818ba069017c27a9e55b10042c1cead118bbd51f114", size = 160269, upload-time = "2026-08-11T12:13:17.518Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/70/8cea54799f49775723c81d6b51c125a52862e90c7d6e0baaebe50e77bd2d/cape_parsers-0.1.69.tar.gz", hash = "sha256:3688e4e78723423f5686cd26a7d818d3eea3fd90b11fcb0848700453153961f8", size = 160846, upload-time = "2026-09-08T16:55:21.396Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/e1/d563b7f3e8720689f6212653167b1e1983201708e8762d6c2486c81de021/cape_parsers-0.1.67-py3-none-any.whl", hash = "sha256:765916fc4ab4a9cf893081c31387e16afbbd916053a71cb1a80f7117eaab69cf", size = 217789, upload-time = "2026-08-11T12:13:16.117Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/e7/402fd0f844acd4dbb880f472960d5ef47f7308e6a7f4947cb82e31449b31/cape_parsers-0.1.69-py3-none-any.whl", hash = "sha256:d768ab746668637f3b2f35dd07ebc6fe03d66232bc091dbeb4e0b21bf0a13c1e", size = 218383, upload-time = "2026-09-08T16:55:20.02Z" },
 ]
 
 [[package]]
 name = "capesolo"
-version = "0.5.29"
+version = "0.5.35"
 source = { editable = "." }
 dependencies = [
     { name = "bs2json" },
@@ -170,7 +170,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bs2json", specifier = ">=0.3.0" },
-    { name = "cape-parsers", specifier = ">=0.1.67" },
+    { name = "cape-parsers", specifier = ">=0.1.68" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "distorm3s", specifier = "==3.5.5" },
     { name = "dnspython", specifier = ">=2.8.0" },
@@ -480,7 +480,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [

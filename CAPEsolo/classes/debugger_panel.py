@@ -4,8 +4,9 @@ from pathlib import Path
 import pefile
 import wx
 
+from . import ui_kit as ui
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, apply_theme
+from .theme import FONT_CODE, SP_SM, SP_XS, apply_theme, dip
 
 # "0x0042EEE3  55                       PUSH      EBP"
 # Two spaces then the instruction bytes: this excludes the stack-dump lines
@@ -47,36 +48,42 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.logFileDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
-        viewButton = wx.Button(self, label="View")
+        self.logFileDropdown = ui.Picker(self)
+        viewButton = ui.Button(self, label="View", variant=ui.PRIMARY)
         viewButton.Bind(wx.EVT_BUTTON, self.OnViewButtonClick)
 
         hbox.Add(
-            self.logFileDropdown, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=10
+            self.logFileDropdown, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=dip(self, SP_SM)
         )
         hbox.Add(viewButton, flag=wx.EXPAND)
-        vbox.Add(hbox, flag=wx.EXPAND | wx.ALL, border=10)
+        vbox.Add(hbox, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_SM))
 
         self.resultsWindow = wx.TextCtrl(
             self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2
         )
         self.resultsWindow.SetFont(FONT_CODE)
-        vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+        vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_SM))
+        self.notice = ui.notice_for(
+            self.resultsWindow,
+            title="No log opened",
+            detail="Pick a debugger log and select View.",
+        )
 
         hboxCover = wx.BoxSizer(wx.HORIZONTAL)
-        self.coverBtn = wx.Button(self, label="Create Coverage File")
+        self.coverBtn = ui.Button(self, label="Create Coverage File")
         self.coverBtn.Bind(wx.EVT_BUTTON, self.OnCover)
         self.coverBtn.Disable()
-        hboxCover.Add(self.coverBtn, proportion=0, flag=wx.ALL | wx.CENTER, border=5)
-        self.coverageFileBtn = wx.Button(self, label="Copy Coverage File")
+        hboxCover.Add(self.coverBtn, proportion=0, flag=wx.ALL | wx.CENTER, border=dip(self, SP_XS))
+        self.coverageFileBtn = ui.Button(self, label="Copy Coverage File")
         self.coverageFileBtn.Bind(wx.EVT_BUTTON, self.OnCopyPath)
         self.coverageFileBtn.Disable()
-        hboxCover.Add(self.coverageFileBtn, proportion=1, flag=wx.ALL | wx.CENTER, border=5)
+        hboxCover.Add(self.coverageFileBtn, proportion=1, flag=wx.ALL | wx.CENTER, border=dip(self, SP_XS))
 
-        vbox.Add(hboxCover, proportion=0, flag=wx.ALL | wx.CENTER, border=5)
+        vbox.Add(hboxCover, proportion=0, flag=wx.ALL | wx.CENTER, border=dip(self, SP_XS))
 
         self.SetSizer(vbox)
         apply_theme(self)
+        self.notice.Present()
 
     def PopulateLogFileDropdown(self):
         path = Path(self.analysisDir, "debugger")
@@ -97,8 +104,13 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
     def LoadDebuggerResults(self, file_name):
         path = Path(self.analysisDir, "debugger") / file_name
         if not path.exists():
-            self.resultsWindow.SetValue("Selected log file does not exist.")
+            self.notice.Present(
+                title="Log not found",
+                detail=f"{file_name} is no longer in the analysis debugger directory.",
+                kind=ui.ERROR,
+            )
             return
+        self.notice.Dismiss()
         self.resultsWindow.SetValue(path.read_text())
 
     def ParseModules(self, analysisData, pid):
@@ -220,33 +232,34 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
         picked = self.PickBase(candidates, knownRanges, addrs) if candidates else None
         loaderBase = f"0x{picked[0]:08X}" if picked else ""
 
-        dialog = wx.Dialog(self, title="Generate Coverage File", size=wx.Size(300, 150))
+        dialog = ui.Dialog(self, title="Generate Coverage File", size=wx.Size(340, 170))
         panel = wx.Panel(dialog)
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         hbox1 = wx.BoxSizer(wx.HORIZONTAL)
         currentLabel = wx.StaticText(panel, label="Current ImageBase   0x:")
-        loaderCtrl = wx.TextCtrl(panel, value=f"{loaderBase}")
-        hbox1.Add(currentLabel, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
-        hbox1.Add(loaderCtrl, proportion=1)
+        loaderField = ui.Field(panel, value=f"{loaderBase}")
+        loaderCtrl = loaderField.ctrl
+        hbox1.Add(currentLabel, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=dip(self, SP_XS))
+        hbox1.Add(loaderField, proportion=1)
         hbox2 = wx.BoxSizer(wx.HORIZONTAL)
         newLabel = wx.StaticText(panel, label="New ImageBase        0x:")
-        imageCtrl = wx.TextCtrl(panel, value=self.TargetImageBase())
-        hbox2.Add(newLabel, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
-        hbox2.Add(imageCtrl, proportion=1)
+        imageField = ui.Field(panel, value=self.TargetImageBase())
+        imageCtrl = imageField.ctrl
+        hbox2.Add(newLabel, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=dip(self, SP_XS))
+        hbox2.Add(imageField, proportion=1)
 
-        vbox.Add(hbox1, flag=wx.EXPAND | wx.ALL, border=5)
-        vbox.Add(hbox2, flag=wx.EXPAND | wx.ALL, border=5)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
+        vbox.Add(hbox2, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
 
-        hbox3 = wx.BoxSizer(wx.HORIZONTAL)
-        okButton = wx.Button(panel, wx.ID_OK, label="Ok")
-        cancelButton = wx.Button(panel, wx.ID_CANCEL, label="Cancel")
-        hbox3.Add(okButton, flag=wx.RIGHT, border=10)
-        hbox3.Add(cancelButton, flag=wx.RIGHT, border=10)
-
-        vbox.Add(hbox3, flag=wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, border=10)
+        vbox.Add(
+            ui.dialog_buttons(panel, ok="Ok"),
+            flag=wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT,
+            border=dip(self, SP_SM),
+        )
 
         panel.SetSizer(vbox)
+        apply_theme(dialog)
 
         if dialog.ShowModal() == wx.ID_OK:
             current = loaderCtrl.GetValue().strip()
@@ -279,13 +292,13 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
                 self.coverageFileBtn.Enable()
 
             if coverageSaved:
-                wx.MessageBox(
+                ui.message(
                     f"Coverage saved to {filepath}.",
                     "Success",
                     wx.OK | wx.ICON_INFORMATION,
                 )
             else:
-                wx.MessageBox(
+                ui.message(
                     "Coverage not saved.", "Failed", wx.OK | wx.ICON_INFORMATION
                 )
 
@@ -302,7 +315,7 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
             file_data.AddFile(self.coverageFilePath)
             wx.TheClipboard.SetData(file_data)
             wx.TheClipboard.Close()
-            wx.MessageBox(
+            ui.message(
                 f"Analysis log copied: {self.coverageFilePath}",
                 "Info",
                 wx.OK | wx.ICON_INFORMATION,

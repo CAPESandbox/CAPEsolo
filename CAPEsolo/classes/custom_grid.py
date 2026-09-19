@@ -1,6 +1,8 @@
 import wx
 import wx.grid as gridlib
 
+from . import ui_kit as ui
+
 
 class CopyableGrid(gridlib.Grid):
     def __init__(self, parent, rows, cols):
@@ -32,7 +34,7 @@ class CopyableGrid(gridlib.Grid):
                 wx.TheClipboard.SetData(wx.TextDataObject(cell_value))
                 wx.TheClipboard.Close()
             else:
-                wx.MessageBox("Unable to open the clipboard", "Error")
+                ui.message("Unable to open the clipboard", "Error")
         else:
             selected_cells = self.GetSelectedCells()
             if selected_cells:
@@ -43,4 +45,4 @@ class CopyableGrid(gridlib.Grid):
                     wx.TheClipboard.SetData(wx.TextDataObject(cell_value))
                     wx.TheClipboard.Close()
                 else:
-                    wx.MessageBox("Unable to open the clipboard", "Error")
+                    ui.message("Unable to open the clipboard", "Error")

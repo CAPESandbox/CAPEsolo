@@ -18,6 +18,8 @@ import wx
 from CAPEsolo.capelib.config_paths import config_paths
 from CAPEsolo.capelib.virustotal import vt_lookup, vt_upload
 
+from . import ui_kit as ui
+
 _community_key_cache = None  # None = not read yet; "" = read, none configured
 
 
@@ -104,7 +106,7 @@ def confirm_vt_upload(window, path):
         "community. This cannot be undone."
     )
     return (
-        wx.MessageBox(msg, "Upload to VirusTotal", wx.YES_NO | wx.ICON_WARNING, window) == wx.YES
+        ui.message(msg, "Upload to VirusTotal", wx.YES_NO | wx.ICON_WARNING, window) == wx.YES
     )
 
 

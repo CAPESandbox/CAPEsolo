@@ -7,9 +7,10 @@ import wx.grid as gridlib
 from CAPEsolo.capelib.behavior import BehaviorAnalysis
 from CAPEsolo.capelib.utils import convert_to_printable
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
-from .theme import BEHAVIOR_CATEGORY_COLORS, FONT_CODE, GRID_ROW_ALT, apply_theme
+from .theme import BEHAVIOR_CATEGORY_COLORS, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
 BACKGNDCLR = BEHAVIOR_CATEGORY_COLORS
 
@@ -31,6 +32,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.BindKeyEvents()
         self.behaviorComplete = False
         self.mycalls = []
+        self._rowCategories = []
         self.filter = ""
         self.category = "all"
         self.numcalls = 0
@@ -42,23 +44,25 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         vbox.AddSpacer(10)
-        self.behaviorButton = wx.Button(self, label="Generate Behavior Results")
+        self.behaviorButton = ui.Button(
+            self, label="Generate Behavior Results", variant=ui.PRIMARY
+        )
         self.behaviorButton.Bind(wx.EVT_BUTTON, self.GenerateBehavior)
         self.behaviorButton.Disable()
-        vbox.Add(self.behaviorButton, proportion=0, border=5)
+        vbox.Add(self.behaviorButton, proportion=0, border=dip(self, SP_XS))
 
-        self.categoryPane = wx.CollapsiblePane(self, label="Behavior Categories")
+        self.categoryPane = ui.Collapsible(self, label="Behavior Categories")
         self.categoryPane.Bind(
             wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnCategoryPaneChanged
         )
         vbox.Add(
-            self.categoryPane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5
+            self.categoryPane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_XS)
         )
         catPane = self.categoryPane.GetPane()
         catBox = wx.BoxSizer(wx.VERTICAL)
-        self.categoryDropdown = wx.ComboBox(catPane, style=wx.CB_READONLY)
+        self.categoryDropdown = ui.Picker(catPane)
         self.categoryDropdown.Bind(wx.EVT_COMBOBOX, self.OnCatView)
-        catBox.Add(self.categoryDropdown, 0, flag=wx.EXPAND | wx.ALL, border=5)
+        catBox.Add(self.categoryDropdown, 0, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
         # Columns are set per category at render time; a selected row's full record shows in
         # the detail pane below (long registry content / decrypted buffers do not fit a cell).
         self.categoryGrid = CopyableGrid(catPane, 0, 0)
@@ -66,23 +70,23 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.categoryGrid.EnableEditing(False)
         self.categoryGrid.SetMinSize((-1, 250))
         self.categoryGrid.Bind(gridlib.EVT_GRID_SELECT_CELL, self.OnCategoryRowSelect)
-        catBox.Add(self.categoryGrid, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        catBox.Add(self.categoryGrid, 1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
         self.categoryDetail = wx.TextCtrl(
             catPane, style=wx.TE_MULTILINE | wx.TE_READONLY
         )
         self.categoryDetail.SetMinSize((-1, 120))
         self.categoryDetail.SetValue("Select a category to view its data.")
-        catBox.Add(self.categoryDetail, 0, flag=wx.EXPAND | wx.ALL, border=5)
+        catBox.Add(self.categoryDetail, 0, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
         catPane.SetSizer(catBox)
         # Full source record per grid row, parallel to the rows, for the detail pane.
         self._categoryRows = []
 
-        self.procTreePane = wx.CollapsiblePane(self, label="Process Tree")
+        self.procTreePane = ui.Collapsible(self, label="Process Tree")
         self.procTreePane.Bind(
             wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnProcTreePaneChanged
         )
         vbox.Add(
-            self.procTreePane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5
+            self.procTreePane, 0, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_XS)
         )
         treePane = self.procTreePane.GetPane()
         treeBox = wx.BoxSizer(wx.VERTICAL)
@@ -96,7 +100,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.procTree.SetMinSize((-1, 200))
         self.procTree.Bind(wx.EVT_TREE_SEL_CHANGED, self.OnProcTreeSelect)
         self.procTree.Bind(wx.EVT_TREE_ITEM_GETTOOLTIP, self.OnProcTreeTooltip)
-        treeBox.Add(self.procTree, 1, flag=wx.EXPAND | wx.ALL, border=5)
+        treeBox.Add(self.procTree, 1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
         treePane.SetSizer(treeBox)
 
         self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
@@ -104,11 +108,11 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.resultsWindow,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
-        vbox.Add(wx.StaticText(self, label="Calls:"), flag=wx.LEFT | wx.TOP, border=5)
+        vbox.Add(wx.StaticText(self, label="Calls:"), flag=wx.LEFT | wx.TOP, border=dip(self, SP_XS))
 
-        collapsePane = wx.CollapsiblePane(self, label="API Categories")
+        collapsePane = ui.Collapsible(self, label="API Categories")
         collapsePane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self.OnPaneChanged)
         vbox.Add(collapsePane, 0, wx.ALL | wx.EXPAND, 5)
 
@@ -117,35 +121,37 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         panehBox1 = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.tid = wx.TextCtrl(pane, size=wx.Size(100, -1), style=wx.TE_PROCESS_ENTER)
-        self.tidButton = wx.Button(pane, label="Filter Thread ID")
+        self.tidField = ui.Field(
+            pane, size=wx.Size(100, -1), style=wx.TE_PROCESS_ENTER
+        )
+        self.tid = self.tidField.ctrl
+        self.tidButton = ui.Button(pane, label="Filter Thread ID")
         self.tidButton.Bind(wx.EVT_BUTTON, self.OnTidFilterButtonClick)
 
-        self.api = wx.TextCtrl(pane, style=wx.TE_PROCESS_ENTER)
-        self.apiFilterButton = wx.Button(pane, label="Filter API")
+        self.apiField = ui.Field(pane, style=wx.TE_PROCESS_ENTER)
+        self.api = self.apiField.ctrl
+        self.apiFilterButton = ui.Button(pane, label="Filter API")
         self.apiFilterButton.Bind(wx.EVT_BUTTON, self.OnApiFilterButtonClick)
 
-        panehBox1.Add(self.tid, flag=wx.ALL, border=5)
-        panehBox1.Add(self.tidButton, flag=wx.ALL, border=5)
+        panehBox1.Add(self.tidField, flag=wx.ALL, border=dip(self, SP_XS))
+        panehBox1.Add(self.tidButton, flag=wx.ALL, border=dip(self, SP_XS))
         self.tidButton.Disable()
 
-        panehBox1.Add(self.api, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
-        panehBox1.Add(self.apiFilterButton, flag=wx.ALL, border=5)
+        panehBox1.Add(self.apiField, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
+        panehBox1.Add(self.apiFilterButton, flag=wx.ALL, border=dip(self, SP_XS))
         self.apiFilterButton.Disable()
 
         panehBox2 = wx.WrapSizer(wx.HORIZONTAL)
 
-        apiButtonFont = FONT_CODE
-
         for key, rgbColor in BACKGNDCLR.items():
-            apiButton = wx.Button(pane, label=key)
-            apiButton.SetBackgroundColour(wx.Colour(rgbColor))
-            apiButton.SetFont(apiButtonFont)
+            # The swatch colour is the legend for the matching grid rows, so it has to win
+            # over the button variant.
+            apiButton = ui.Button(pane, label=key, colour=wx.Colour(rgbColor))
             apiButton.Bind(wx.EVT_BUTTON, self.OnApiCategoryClick)
-            panehBox2.Add(apiButton, 0, wx.ALL, 5)
+            panehBox2.Add(apiButton, 0, wx.ALL, dip(self, SP_XS))
 
-        paneBox.Add(panehBox1, flag=wx.EXPAND | wx.ALL, border=5)
-        paneBox.Add(panehBox2, flag=wx.EXPAND | wx.ALL, border=5)
+        paneBox.Add(panehBox1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
+        paneBox.Add(panehBox2, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
 
         pane.SetSizer(paneBox)
         paneBox.Layout()
@@ -181,60 +187,65 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.grid,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.pagination_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.first_page_button = wx.Button(self, label="<<")
+        self.first_page_button = ui.Button(self, label="<<")
         self.first_page_button.Bind(wx.EVT_BUTTON, self.OnFirstPage)
         self.first_page_button.Disable()
-        self.pagination_sizer.Add(self.first_page_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.first_page_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.prev_button = wx.Button(self, label="Previous")
+        self.prev_button = ui.Button(self, label="Previous")
         self.prev_button.Bind(wx.EVT_BUTTON, self.OnPrevPage)
         self.prev_button.Disable()
-        self.pagination_sizer.Add(self.prev_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.prev_button, 0, wx.ALL, dip(self, SP_XS))
 
         self.page_label = wx.StaticText(self, label="Page 1 of 1")
         self.pagination_sizer.Add(self.page_label, 0, wx.ALL | wx.CENTER, 5)
 
-        self.page_input = wx.TextCtrl(
+        self.page_field = ui.Field(
             self, value="1", size=wx.Size(50, -1), style=wx.TE_PROCESS_ENTER
         )
+        self.page_input = self.page_field.ctrl
         self.page_input.Bind(wx.EVT_TEXT_ENTER, self.OnGoToPage)
-        self.pagination_sizer.Add(self.page_input, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.page_field, 0, wx.ALL, dip(self, SP_XS))
 
-        self.go_button = wx.Button(self, label="Go")
+        self.go_button = ui.Button(self, label="Go")
         self.go_button.Bind(wx.EVT_BUTTON, self.OnGoToPage)
-        self.pagination_sizer.Add(self.go_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.go_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.next_button = wx.Button(self, label="Next")
+        self.next_button = ui.Button(self, label="Next")
         self.next_button.Bind(wx.EVT_BUTTON, self.OnNextPage)
         self.next_button.Disable()
-        self.pagination_sizer.Add(self.next_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.next_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.last_page_button = wx.Button(self, label=">>")
+        self.last_page_button = ui.Button(self, label=">>")
         self.last_page_button.Bind(wx.EVT_BUTTON, self.OnLastPage)
         self.last_page_button.Disable()
-        self.pagination_sizer.Add(self.last_page_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.last_page_button, 0, wx.ALL, dip(self, SP_XS))
 
         self.items_per_page_choices = [25, 50, 100, 500, 1000, 10000]
-        self.items_per_page_dropdown = wx.ComboBox(
-            self, value=str(self.items_per_page), choices=[str(c) for c in self.items_per_page_choices], style=wx.CB_READONLY
+        self.items_per_page_dropdown = ui.Picker(
+            self,
+            value=str(self.items_per_page),
+            choices=[str(c) for c in self.items_per_page_choices],
         )
         self.items_per_page_dropdown.Bind(wx.EVT_COMBOBOX, self.OnItemsPerPageChange)
         self.pagination_sizer.Add(
             wx.StaticText(self, label="Calls per page:"), 0, wx.ALL | wx.CENTER, 5
         )
-        self.pagination_sizer.Add(self.items_per_page_dropdown, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.items_per_page_dropdown, 0, wx.ALL, dip(self, SP_XS))
 
-        self.max_button = wx.Button(self, label="Max")
+        self.max_button = ui.Button(self, label="Max")
         self.max_button.Bind(wx.EVT_BUTTON, self.OnMax)
-        self.pagination_sizer.Add(self.max_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.max_button, 0, wx.ALL, dip(self, SP_XS))
 
         vbox.Add(self.pagination_sizer, 0, wx.CENTER | wx.BOTTOM, 5)
-        self.pagination_sizer.Hide(True)
+        # ShowItems, not Hide(True): wx.Sizer.Hide is overloaded on index, so the bool
+        # resolved to index 1 and hid the Previous button rather than the whole row.
+        self.pagination_sizer.ShowItems(False)
 
         self.SetSizer(vbox)
         vbox.Fit(self)
@@ -393,7 +404,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         # placeholder meant this guard never fired and the placeholder was looked up as if
         # it were a real category, silently displaying "No results".
         if not selectedCategory or selectedCategory == "<Select category>":
-            wx.MessageBox(
+            ui.message(
                 "Please select a category dropdown.",
                 "No Category Selected",
                 wx.OK | wx.ICON_WARNING,
@@ -603,7 +614,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             height = 5 * self.resultsWindow.GetCharHeight()
             self.resultsWindow.SetSizeHints(-1, -1, -1, height)
             self.resultsWindow.SetMinSize((1, height))
-            self.pagination_sizer.Show(True)
+            self.pagination_sizer.ShowItems(True)
             self.grid.Show()
             self.Layout()
             self.ViewProcess(data)
@@ -665,8 +676,14 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         end_index = start_index + self.items_per_page
         paginated_calls = mycalls[start_index:end_index]
 
+        # Row -> category, kept so a later theme switch can recolour these rows from the
+        # new palette instead of leaving them painted with whichever palette was active
+        # when the page was built (see ApplyAlternateRowShading).
+        self._rowCategories = []
+
         for i, call in enumerate(paginated_calls):
             category = call.get("category", "none")
+            self._rowCategories.append(category)
             self.grid.AppendRows(1)
             self.grid.SetCellValue(i, 0, call.get("timestamp", ""))
             self.grid.SetCellValue(i, 1, str(call.get("thread_id", "")))
@@ -691,8 +708,12 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.grid.SetCellValue(i, 6, returnVal)
             self.grid.SetCellValue(i, 7, str(call.get("repeated", "")))
 
-            color = wx.Colour(BACKGNDCLR.get(category, (255, 255, 255)))
-            self.ApplyBackgroundColor(i, color)
+            # A category missing from the palette gets no row colour at all. The old
+            # fallback was pure white, which punched a hole in the dark grid; leaving the
+            # row alone keeps it on the grid background and its alternating shading.
+            rgbColor = BACKGNDCLR.get(category)
+            if rgbColor is not None:
+                self.ApplyBackgroundColor(i, wx.Colour(rgbColor))
 
         self.grid.AutoSizeColumns()
         self.grid.AutoSizeRows()
@@ -703,10 +724,24 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.grid.ForceRefresh()
 
     def ApplyAlternateRowShading(self):
+        """Stripe uncategorised rows and, on a theme switch, recolour categorised ones.
+
+        RefreshTheme() (main_frame.py) calls this by name after repainting the app to
+        rebuild whatever per-row colouring apply_theme() cannot reach on its own. A plain
+        SetDefaultCellTextColour/SetCellBackgroundColour repaint only updates the grid's
+        defaults; a row already coloured via SetCellBackgroundColour (below, and in
+        AddTableData) keeps the concrete wx.Colour it was given even after BACKGNDCLR is
+        mutated to the new palette, e.g. leaving light-palette near-black text sitting on
+        the old dark-palette's near-black row fills after a Dark -> Light toggle.
+        """
         numRows = self.grid.GetNumberRows()
 
         for row in range(numRows):
-            if row % 2 == 0:
+            category = self._rowCategories[row] if row < len(self._rowCategories) else None
+            rgbColor = BACKGNDCLR.get(category)
+            if rgbColor is not None:
+                self.ApplyBackgroundColor(row, wx.Colour(rgbColor))
+            elif row % 2 == 0:
                 attr = gridlib.GridCellAttr()
                 attr.SetBackgroundColour(GRID_ROW_ALT)
                 self.grid.SetRowAttr(row, attr)
@@ -769,13 +804,13 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
                 self.current_page = page_num
                 self.AddTableData()
             else:
-                wx.MessageBox(
+                ui.message(
                     f"Page number must be between 1 and {total_pages}.",
                     "Invalid Page Number",
                     wx.OK | wx.ICON_ERROR,
                 )
         except ValueError:
-            wx.MessageBox(
+            ui.message(
                 "Please enter a valid integer page number.",
                 "Invalid Input",
                 wx.OK | wx.ICON_ERROR

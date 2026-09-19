@@ -12,9 +12,10 @@ import wx.grid as gridlib
 from CAPEsolo.capelib.cape_utils import PARSER_EXTRACTED
 from CAPEsolo.capelib.path_utils import path_exists, path_mkdir
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme
+from .theme import FONT_CODE, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
 # A payload is named by its sha256 and a config value can be a long list, so autosizing
 # either column alone can take the whole width and push the rest of the row off screen.
@@ -267,10 +268,12 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         vbox.AddSpacer(10)
-        self.configsButton = wx.Button(self, label="Extract Configs")
+        self.configsButton = ui.Button(
+            self, label="Extract Configs", variant=ui.PRIMARY, glyph=ui.DOWNLOAD
+        )
         self.configsButton.Bind(wx.EVT_BUTTON, self.ExtractConfigs)
         self.configsButton.Disable()
-        vbox.Add(self.configsButton, proportion=0, flag=wx.ALL, border=5)
+        vbox.Add(self.configsButton, proportion=0, flag=wx.ALL, border=dip(self, SP_XS))
 
         self.grid = CopyableGrid(self, 0, 4)
         for col, label in enumerate(("File", "Family", "Field", "Value")):
@@ -288,21 +291,27 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
             self.grid,
             proportion=2,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
         self.resultsWindow.SetFont(FONT_CODE)
-        self.resultsWindow.SetValue("Extract after Yara Processing.")
         vbox.Add(
             self.resultsWindow,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
+        )
+        # Extraction runs off yara hits, so this area is empty until that has happened.
+        self.notice = ui.notice_for(
+            self.resultsWindow,
+            title="No configs extracted",
+            detail="Extract after Yara Processing.",
         )
 
         self.SetSizer(vbox)
         apply_theme(self)
+        self.notice.Present()
 
     def ExtractConfigs(self, event):
         entries = []
@@ -400,7 +409,15 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
                 self.grid.SetColSize(col, limit)
         self.grid.AutoSizeRows()
         self.ApplyAlternateRowShading()
-        self.resultsWindow.SetValue(self.Summarize(entries))
+        if self.rows:
+            self.notice.Dismiss()
+            self.resultsWindow.SetValue(self.Summarize(entries))
+        else:
+            # Nothing came out, which may still carry parser errors worth reading, so the
+            # summary stays - as the state's detail rather than as the whole view.
+            self.notice.Present(
+                title="No configs extracted", detail=self.Summarize(entries)
+            )
         self.Layout()
 
     def ApplyAlternateRowShading(self):
@@ -449,6 +466,7 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         row = event.GetRow()
         if 0 <= row < len(self.rows):
             detail = self.FormatRow(self.rows[row])
+            self.notice.Dismiss()
             self.resultsWindow.SetValue(detail.replace("\x00", ""))
         event.Skip()
 

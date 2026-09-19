@@ -12,16 +12,21 @@ from .theme import (
     FONT_CODE,
     FONT_UI,
     TIMER_WARN,
+    dip,
 )
 
 # Fractions of the analysis timeout at which the countdown changes colour.
 WARN_FRACTION = 0.25
 CRITICAL_FRACTION = 0.10
 
+# Geometry in DIPs, scaled per window: at 150% the fonts grow but a pixel height would
+# not, and the digits would be clipped by the bar they sit in.
 BAR_HEIGHT = 28
 # Width reserved on the right for the countdown block (digits + depleting bar).
 COUNTDOWN_WIDTH = 190
 PADDING = 8
+# Depleting bar thickness.
+TROUGH_HEIGHT = 6
 
 
 def format_clock(seconds):
@@ -43,7 +48,7 @@ class AnalysisStatusBar(wx.Panel):
     """
 
     def __init__(self, parent):
-        super(AnalysisStatusBar, self).__init__(parent, size=(-1, BAR_HEIGHT))
+        super(AnalysisStatusBar, self).__init__(parent)
         self.state = "Idle"
         self.total = 0
         self.remaining = 0
@@ -55,7 +60,8 @@ class AnalysisStatusBar(wx.Panel):
         # The bar repaints every second; without these it flickers on each tick.
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda evt: None)
         self.SetDoubleBuffered(True)
-        self.SetMinSize((-1, BAR_HEIGHT))
+        # Set after construction: FromDIP needs a realised window to know the scale.
+        self.SetMinSize(wx.Size(-1, dip(self, BAR_HEIGHT)))
 
     # -- public API ---------------------------------------------------------
     def StartCountdown(self, seconds):
@@ -147,6 +153,7 @@ class AnalysisStatusBar(wx.Panel):
     def OnPaint(self, event):
         dc = wx.BufferedPaintDC(self)
         width, height = self.GetClientSize()
+        padding = dip(self, PADDING)
 
         dc.SetBackground(wx.Brush(BG_CARD))
         dc.Clear()
@@ -158,14 +165,15 @@ class AnalysisStatusBar(wx.Panel):
         dc.SetFont(FONT_UI)
         dc.SetTextForeground(FG_SECONDARY)
         _, textHeight = dc.GetTextExtent(self.state)
-        dc.DrawText(self.state, PADDING, (height - textHeight) // 2)
+        dc.DrawText(self.state, padding, (height - textHeight) // 2)
 
         if self.total:
             self._DrawCountdown(dc, width, height)
 
     def _DrawCountdown(self, dc, width, height):
         accent = self._accent()
-        left = width - COUNTDOWN_WIDTH
+        padding = dip(self, PADDING)
+        left = width - dip(self, COUNTDOWN_WIDTH)
         label = format_clock(self.remaining)
 
         dc.SetFont(FONT_CODE)
@@ -174,19 +182,20 @@ class AnalysisStatusBar(wx.Panel):
         dc.DrawText(label, left, (height - labelHeight) // 2 - 2)
 
         # Depleting bar, filled proportionally to time left.
-        barLeft = left + labelWidth + PADDING
-        barWidth = width - barLeft - PADDING
+        barLeft = left + labelWidth + padding
+        barWidth = width - barLeft - padding
         if barWidth <= 0:
             return
 
-        barTop = height // 2 - 3
+        trough = dip(self, TROUGH_HEIGHT)
+        barTop = (height - trough) // 2
         dc.SetPen(wx.TRANSPARENT_PEN)
         # BG_DROPDOWN rather than BG_INPUT for the empty trough: on the light palette
         # BG_INPUT is pure white and measures 1.06:1 against the card, i.e. invisible.
         dc.SetBrush(wx.Brush(BG_DROPDOWN))
-        dc.DrawRectangle(barLeft, barTop, barWidth, 6)
+        dc.DrawRectangle(barLeft, barTop, barWidth, trough)
 
         filled = int(barWidth * max(0.0, min(1.0, self._fraction())))
         if filled:
             dc.SetBrush(wx.Brush(accent))
-            dc.DrawRectangle(barLeft, barTop, filled, 6)
+            dc.DrawRectangle(barLeft, barTop, filled, trough)

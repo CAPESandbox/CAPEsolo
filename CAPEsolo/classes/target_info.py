@@ -5,9 +5,10 @@ import wx.grid as gridlib
 
 from CAPEsolo.capelib.objects import File
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .pe_window import PeWindow
-from .theme import GRID_ROW_ALT, apply_theme
+from .theme import GRID_ROW_ALT, SP_XS, apply_theme, dip
 from .vt_helper import (
     confirm_vt_upload,
     format_vt_rows,
@@ -56,29 +57,29 @@ class TargetInfoPanel(wx.Panel):
         leftAttr1.SetAlignment(wx.ALIGN_LEFT, wx.ALIGN_CENTRE)
         self.grid.SetColAttr(1, leftAttr1)
         self.grid.EnableEditing(False)
-        vbox.Add(self.grid, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
+        vbox.Add(self.grid, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
 
         hboxButtons = wx.BoxSizer(wx.HORIZONTAL)
-        self.getInfoButton = wx.Button(self, label="Get Info")
+        self.getInfoButton = ui.Button(self, label="Get Info", variant=ui.PRIMARY)
         self.getInfoButton.SetToolTip(
             "Inspect the file currently selected on the Start tab. Display only - the "
             "file is not copied, analysed or recorded."
         )
         self.getInfoButton.Bind(wx.EVT_BUTTON, self.OnGetInfo)
-        hboxButtons.Add(self.getInfoButton, proportion=0, flag=wx.RIGHT, border=5)
-        self.peButton = wx.Button(self, label="PE")
+        hboxButtons.Add(self.getInfoButton, proportion=0, flag=wx.RIGHT, border=dip(self, SP_XS))
+        self.peButton = ui.Button(self, label="PE")
         self.peButton.Bind(wx.EVT_BUTTON, self.OnShowPe)
         self.peButton.Hide()
-        hboxButtons.Add(self.peButton, proportion=0, flag=wx.RIGHT, border=5)
-        self.vtButton = wx.Button(self, label="VirusTotal")
+        hboxButtons.Add(self.peButton, proportion=0, flag=wx.RIGHT, border=dip(self, SP_XS))
+        self.vtButton = ui.Button(self, label="VirusTotal")
         self.vtButton.Bind(wx.EVT_BUTTON, self.OnVirusTotalLookup)
         self.vtButton.Hide()
-        hboxButtons.Add(self.vtButton, proportion=0, flag=wx.RIGHT, border=5)
-        self.uploadButton = wx.Button(self, label="Upload to VT")
+        hboxButtons.Add(self.vtButton, proportion=0, flag=wx.RIGHT, border=dip(self, SP_XS))
+        self.uploadButton = ui.Button(self, label="Upload to VT")
         self.uploadButton.Bind(wx.EVT_BUTTON, self.OnVtUpload)
         self.uploadButton.Hide()
         hboxButtons.Add(self.uploadButton, proportion=0)
-        vbox.Add(hboxButtons, proportion=0, flag=wx.LEFT | wx.BOTTOM, border=5)
+        vbox.Add(hboxButtons, proportion=0, flag=wx.LEFT | wx.BOTTOM, border=dip(self, SP_XS))
 
         self.SetSizer(vbox)
         apply_theme(self)
@@ -143,7 +144,7 @@ class TargetInfoPanel(wx.Panel):
         startTab = getattr(self.GetMainFrame(), "startTab", None)
         selected = startTab.targetPath.GetValue().strip() if startTab else ""
         if not selected:
-            wx.MessageBox(
+            ui.message(
                 "No target file selected. Choose one on the Start tab first.",
                 "No Target",
                 wx.OK | wx.ICON_INFORMATION,
@@ -152,7 +153,7 @@ class TargetInfoPanel(wx.Panel):
 
         path = Path(selected)
         if not path.is_file():
-            wx.MessageBox(
+            ui.message(
                 f"Not a readable file:\n{path}", "Error", wx.OK | wx.ICON_ERROR
             )
             return
@@ -162,7 +163,7 @@ class TargetInfoPanel(wx.Panel):
             with wx.BusyCursor():
                 self.PopulateGrid(path)
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to read file info: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
 
@@ -187,7 +188,7 @@ class TargetInfoPanel(wx.Panel):
             )
             viewer_window.Show()
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to execute the command: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
 
@@ -206,7 +207,7 @@ class TargetInfoPanel(wx.Panel):
             return
         if result.get("error"):
             self.vtButton.Enable()  # allow a retry
-            wx.MessageBox(result.get("msg", "VirusTotal lookup failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
+            ui.message(result.get("msg", "VirusTotal lookup failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
             return
         self._ShowVtResult(result)
         self.Layout()
@@ -245,7 +246,7 @@ class TargetInfoPanel(wx.Panel):
             if current:
                 self.uploadButton.Enable()
             self._SetStatus("VirusTotal upload failed")
-            wx.MessageBox(result.get("msg", "Upload failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
+            ui.message(result.get("msg", "Upload failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
             return
         self._SetStatus("Uploaded to VirusTotal - analysis queued")
         if current:
@@ -257,7 +258,7 @@ class TargetInfoPanel(wx.Panel):
             self.grid.AutoSizeRows()
             self.ApplyAlternateRowShading()
             self.Layout()
-        wx.MessageBox(
+        ui.message(
             "File submitted to VirusTotal. Analysis is queued.",
             "VirusTotal",
             wx.OK | wx.ICON_INFORMATION,

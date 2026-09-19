@@ -4,20 +4,18 @@ import wx
 
 from CAPEsolo.capelib.cmdconsts import CMD_PATCH_BYTES
 
+from . import ui_kit as ui
 from .patch_models import PatchEntry
-from .theme import apply_theme
+from .theme import apply_theme, band_rows
 
 
-class PatchDialog(wx.Dialog):
+class PatchDialog(ui.Dialog):
     def __init__(self, parent, instrStr):
         super().__init__(parent, title="Assemble Instructions", size=(400,300))
         vbox = wx.BoxSizer(wx.VERTICAL)
         self.textCtrl = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         vbox.Add(self.textCtrl, 1, wx.EXPAND|wx.ALL, 5)
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-        hbox.Add(wx.Button(self, wx.ID_OK), 0, wx.RIGHT, 5)
-        hbox.Add(wx.Button(self, wx.ID_CANCEL), 0)
-        vbox.Add(hbox, 0, wx.ALIGN_CENTER|wx.ALL, 5)
+        vbox.Add(ui.dialog_buttons(self), 0, wx.EXPAND|wx.ALL, 5)
         self.textCtrl.SetValue(instrStr)
         self.SetSizer(vbox)
         apply_theme(self)
@@ -26,7 +24,7 @@ class PatchDialog(wx.Dialog):
         return self.textCtrl.GetValue()
 
 
-class ConfirmPatchDialog(wx.Dialog):
+class ConfirmPatchDialog(ui.Dialog):
     """
     Dialog to confirm assembled patch code before applying.
     """
@@ -37,15 +35,12 @@ class ConfirmPatchDialog(wx.Dialog):
         vbox.Add(label, 0, wx.EXPAND | wx.ALL, 5)
         self.codeCtrl = wx.TextCtrl(self, value=codeHex, style=wx.TE_MULTILINE | wx.TE_READONLY)
         vbox.Add(self.codeCtrl, 1, wx.EXPAND | wx.ALL, 5)
-        btnBox = wx.BoxSizer(wx.HORIZONTAL)
-        btnBox.Add(wx.Button(self, wx.ID_OK, label="Submit"), 0, wx.RIGHT, 5)
-        btnBox.Add(wx.Button(self, wx.ID_CANCEL, label="Cancel"), 0)
-        vbox.Add(btnBox, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+        vbox.Add(ui.dialog_buttons(self, ok="Submit"), 0, wx.EXPAND | wx.ALL, 5)
         self.SetSizer(vbox)
         apply_theme(self)
 
 
-class PatchHistoryDialog(wx.Dialog):
+class PatchHistoryDialog(ui.Dialog):
     """
     Dialog to display the global patch history.
     """
@@ -70,8 +65,10 @@ class PatchHistoryDialog(wx.Dialog):
             ts = entry.timeStamp.strftime("%Y-%m-%d %H:%M:%S")
             self.historyCtrl.SetItem(idx, 4, ts)
 
+        band_rows(self.historyCtrl)
+
         vbox.Add(self.historyCtrl, 1, wx.EXPAND | wx.ALL, 5)
-        btn = wx.Button(self, wx.ID_CLOSE, label="Close")
+        btn = ui.Button(self, wx.ID_CLOSE, label="Close", variant=ui.PRIMARY)
         vbox.Add(btn, 0, wx.ALIGN_CENTER | wx.ALL, 5)
         self.SetSizer(vbox)
 

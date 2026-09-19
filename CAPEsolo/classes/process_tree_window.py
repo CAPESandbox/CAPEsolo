@@ -6,6 +6,7 @@ from threading import Thread
 
 import wx
 
+from . import ui_kit as ui
 from .process_tools import (
     dump_process_memory,
     resume_process,
@@ -13,12 +14,15 @@ from .process_tools import (
     suspend_process,
     terminate_process,
 )
-from .theme import apply_theme
+from .theme import FG_SECONDARY, SP_XS, apply_theme, dip
 
 log = logging.getLogger(__name__)
 
 REFRESH_MS = 1500
-EXITED_COLOUR = wx.Colour(140, 140, 140)
+# Exited processes are de-emphasised, not disabled: the muted text token is contrast-checked
+# against every surface, unlike the flat grey this used to hardcode. theme.py mutates its
+# colours in place on a palette switch, so aliasing the token here still follows the theme.
+EXITED_COLOUR = FG_SECONDARY
 WINDOW_SIZE = wx.Size(520, 640)
 # Gap left between the window and the edges of the screen it is parked against.
 SCREEN_MARGIN = 12
@@ -67,21 +71,23 @@ class ProcessTreeWindow(wx.Frame):
             style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT | wx.TR_HAS_BUTTONS | wx.TR_LINES_AT_ROOT,
         )
         self.root = self.tree.AddRoot("Processes")
+        self.tree.Bind(wx.EVT_TREE_ITEM_GETTOOLTIP, self.OnItemTooltip)
+        self.tree.Bind(wx.EVT_TREE_ITEM_RIGHT_CLICK, self.OnRightClick)
+        self.tree.Bind(wx.EVT_TREE_ITEM_COLLAPSED, self.OnItemCollapsed)
+        self.tree.Bind(wx.EVT_TREE_ITEM_EXPANDED, self.OnItemExpanded)
+        vbox.Add(self.tree, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
+        panel.SetSizer(vbox)
+        apply_theme(self)
         # The native Explorer-themed tree draws its expander arrows only on hover and they wash out
         # against the dark theme. Dropping the visual style gives classic, always-visible +/- buttons.
+        # Must run after apply_theme(): _style_widget() applies DarkMode_Explorer to every native
+        # control it walks, including this tree, which would silently overwrite this override.
         try:
             import ctypes
 
             ctypes.windll.uxtheme.SetWindowTheme(ctypes.c_void_p(self.tree.GetHandle()), "", "")
         except Exception:
             pass
-        self.tree.Bind(wx.EVT_TREE_ITEM_GETTOOLTIP, self.OnItemTooltip)
-        self.tree.Bind(wx.EVT_TREE_ITEM_RIGHT_CLICK, self.OnRightClick)
-        self.tree.Bind(wx.EVT_TREE_ITEM_COLLAPSED, self.OnItemCollapsed)
-        self.tree.Bind(wx.EVT_TREE_ITEM_EXPANDED, self.OnItemExpanded)
-        vbox.Add(self.tree, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
-        panel.SetSizer(vbox)
-        apply_theme(self)
         self.SetSize(WINDOW_SIZE)
         self.SetPosition(self.StartPosition(position))
 
@@ -299,7 +305,7 @@ class ProcessTreeWindow(wx.Frame):
                 self.suspended.add(pid)
                 self._SetStatus(f"Suspended pid {pid}")
         except OSError as e:
-            wx.MessageBox(str(e), "Process Tree", wx.OK | wx.ICON_ERROR)
+            ui.message(str(e), "Process Tree", wx.OK | wx.ICON_ERROR)
         self._Render()
 
     def _subtree(self, pid):
@@ -338,7 +344,7 @@ class ProcessTreeWindow(wx.Frame):
                 f"Terminate {name} ({pid})?\n\nCapemon is asked to shut it down cleanly first; if it "
                 "does not exit it is force-killed. Monitoring of this process ends."
             )
-        if wx.MessageBox(msg, "Terminate Process", wx.YES_NO | wx.ICON_WARNING, self) != wx.YES:
+        if ui.message(msg, "Terminate Process", wx.YES_NO | wx.ICON_WARNING, self) != wx.YES:
             return
         self._SetStatus(
             f"Terminating {name} ({pid})" + (f" +{childCount} child(ren)..." if childCount else "...")
@@ -360,7 +366,7 @@ class ProcessTreeWindow(wx.Frame):
             self.suspended.discard(p)
         if errors:
             self._SetStatus("Terminate: some processes failed")
-            wx.MessageBox(
+            ui.message(
                 "Some processes could not be terminated:\n" + "\n".join(errors),
                 "Process Tree",
                 wx.OK | wx.ICON_ERROR,
@@ -385,7 +391,7 @@ class ProcessTreeWindow(wx.Frame):
     def _AfterDump(self, path, err):
         if err:
             self._SetStatus("Memory dump failed")
-            wx.MessageBox(err, "Process Tree", wx.OK | wx.ICON_ERROR)
+            ui.message(err, "Process Tree", wx.OK | wx.ICON_ERROR)
         else:
             self._SetStatus(f"Memory dumped to {path}")
 

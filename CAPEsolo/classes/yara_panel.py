@@ -5,9 +5,10 @@ import wx.grid as gridlib
 
 from CAPEsolo.capelib.cape_utils import get_cape_name_from_yara_hit
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme
+from .theme import FONT_CODE, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
 ALL_FILES = "<All files>"
 
@@ -49,21 +50,23 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         vbox.AddSpacer(10)
-        self.yaraButton = wx.Button(self, label="Process Yara Results")
+        self.yaraButton = ui.Button(
+            self, label="Process Yara Results", variant=ui.PRIMARY, glyph=ui.REFRESH
+        )
         self.yaraButton.Bind(wx.EVT_BUTTON, self.ProcessYara)
         self.yaraButton.Disable()
-        vbox.Add(self.yaraButton, proportion=0, flag=wx.ALL, border=5)
+        vbox.Add(self.yaraButton, proportion=0, flag=wx.ALL, border=dip(self, SP_XS))
 
-        self.fileDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
+        self.fileDropdown = ui.Picker(self)
         self.fileDropdown.Bind(wx.EVT_COMBOBOX, self.OnFileView)
         vbox.Add(
-            wx.StaticText(self, label="Scanned files:"), flag=wx.LEFT | wx.TOP, border=5
+            wx.StaticText(self, label="Scanned files:"), flag=wx.LEFT | wx.TOP, border=dip(self, SP_XS)
         )
         vbox.Add(
             self.fileDropdown,
             proportion=0,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.grid = CopyableGrid(self, 0, 5)
@@ -86,21 +89,28 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
             self.grid,
             proportion=2,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.resultsWindow = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
         self.resultsWindow.SetFont(FONT_CODE)
-        self.resultsWindow.SetValue("Process yara results to list rule hits.")
         vbox.Add(
             self.resultsWindow,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
+        )
+        # Until a scan has run there is no output, so the area explains itself instead of
+        # holding a sentence in the results box's monospace.
+        self.notice = ui.notice_for(
+            self.resultsWindow,
+            title="No yara results yet",
+            detail="Process yara results to list rule hits.",
         )
 
         self.SetSizer(vbox)
         apply_theme(self)
+        self.notice.Present()
 
     def AddHits(self, file, hits):
         """Flatten one file's yara results into hit records.
@@ -187,7 +197,16 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
                 self.grid.SetColSize(col, limit)
         self.grid.AutoSizeRows()
         self.ApplyAlternateRowShading()
-        self.resultsWindow.SetValue(self.Summarize())
+        if self.viewHits:
+            self.notice.Dismiss()
+            self.resultsWindow.SetValue(self.Summarize())
+        else:
+            # A scan that matched nothing is still a result, so it says which filter it
+            # applies to rather than reading as "not run yet".
+            self.notice.Present(
+                title="No yara hits",
+                detail=self.Summarize(),
+            )
         self.Layout()
 
     def ApplyAlternateRowShading(self):
@@ -253,6 +272,7 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
             # no error anywhere. _yara_encode_string should already prevent this; the guard
             # stays because losing the rest of the detail is silent when it does happen.
             detail = self.FormatHit(self.viewHits[row])
+            self.notice.Dismiss()
             self.resultsWindow.SetValue(detail.replace("\x00", ""))
         event.Skip()
 

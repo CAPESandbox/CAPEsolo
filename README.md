@@ -1,5 +1,25 @@
 Python GUI to run capemon in standalone VM. Provides a subset of CAPE (Configuration And Payload Extraction) processing and results.
 
+![CAPEsolo, dark theme](https://raw.githubusercontent.com/CAPESandbox/CAPEsolo/main/docs/images/frame-dark.png)
+
+The Interface
+* Tabs across the top: Start, then one per result view (Info, Behavior, Signatures, Payloads,
+  Yara, Configs, Strings, Debugger, JS Log, Network).
+* The Start tab groups target selection, package options, monitor and logging flags into
+  cards; the actions (Launch, Kill, reports, Zip Results) stay pinned at the bottom of the
+  window, so they do not scroll away.
+* Dark and light themes, switched from the status bar at the bottom right or from Settings.
+  The choice is written to `cfg.ini` and restored on the next run.
+
+![CAPEsolo, light theme](https://raw.githubusercontent.com/CAPESandbox/CAPEsolo/main/docs/images/frame-light.png)
+
+Working on the UI
+* `tools/uidev/` builds the real panels off screen and writes them to PNGs, so a layout
+  change can be smoke-tested and screenshotted without launching an analysis. See
+  `tools/uidev/README.md`.
+* The same scripts run in CI on every pull request, on a Windows runner, and upload the
+  renders as an artifact.
+
 * Create a Windows 10 VM that's suitable for running malware.
   * Use the CAPEv2 guest guide for configuration details.
   * https://capev2.readthedocs.io/en/latest/installation/guest/index.html

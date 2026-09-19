@@ -163,3 +163,5 @@ CLAUDE.md
 .antigravity*/
 .ruff_cache/
 .ai/
+/CAPEsolo/dll
+CAPEsolo/data/yara/capemon.yac

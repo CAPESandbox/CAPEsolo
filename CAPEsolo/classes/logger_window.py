@@ -2,8 +2,9 @@ import logging
 
 import wx
 
+from . import ui_kit as ui
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, apply_theme
+from .theme import FONT_CODE, SP_XS, apply_theme, dip
 
 
 class WxTextCtrlHandler(logging.Handler):
@@ -37,10 +38,10 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
             panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2
         )
         self.resultsWindow.SetFont(FONT_CODE)
-        vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
-        copyPathBtn = wx.Button(panel, label="Copy Log")
+        vbox.Add(self.resultsWindow, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
+        copyPathBtn = ui.Button(panel, label="Copy Log")
         copyPathBtn.Bind(wx.EVT_BUTTON, self.OnCopyPath)
-        vbox.Add(copyPathBtn, proportion=0, flag=wx.ALL | wx.CENTER, border=5)
+        vbox.Add(copyPathBtn, proportion=0, flag=wx.ALL | wx.CENTER, border=dip(self, SP_XS))
         panel.SetSizer(vbox)
         # Theme the frame, not just the panel: apply_window_theme only fires for a wx.Frame,
         # so themeing the panel alone left the title bar light while the app was dark.
@@ -76,7 +77,7 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
             fileData.AddFile(self.analysisLogPath)
             wx.TheClipboard.SetData(fileData)
             wx.TheClipboard.Close()
-            wx.MessageBox(
+            ui.message(
                 f"Analysis log copied: {self.analysisLogPath}",
                 "Info",
                 wx.OK | wx.ICON_INFORMATION,

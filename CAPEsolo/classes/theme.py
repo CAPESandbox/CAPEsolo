@@ -94,11 +94,105 @@ ACCENT_JUMP = wx.Colour(0,   255, 0)      # #00ff00 - jmp / conditional jumps
 TIMER_WARN = wx.Colour(210, 153, 34)      # #d29922
 
 # ---------------------------------------------------------------------------
+# Surface, border, state and semantic-action tokens.
+#
+# These exist because the tokens above describe only resting fills: they can say what a
+# button looks like, but not what it looks like under the pointer, held down, focused or
+# disabled. Native MSW controls did not need them (the OS drew those states, ignoring our
+# colours in the process); the owner-drawn controls in ui_kit.py have to draw every state
+# themselves, so each one needs a name here rather than an ad-hoc tweak at the call site.
+# ---------------------------------------------------------------------------
+
+# Elevation. BG_MAIN is the window, BG_CARD a grouped section, BG_SURFACE something raised
+# above a card (a popup, a header row, a hovered tab).
+BG_SURFACE = wx.Colour(39,  45,  58)     # #272d3a
+
+# Borders. SUBTLE separates regions that are already distinguished by fill; STRONG outlines
+# a control that has to read as interactive against a similar background.
+BORDER_SUBTLE = wx.Colour(44,  51,  64)  # #2c3340
+BORDER_STRONG = wx.Colour(61,  70,  87)  # #3d4657
+
+# Interaction states, applied to buttons, tabs, list rows and anything else clickable.
+BG_HOVER   = wx.Colour(44,  52,  68)     # #2c3444
+BG_PRESSED = wx.Colour(27,  32,  40)     # #1b2028
+
+# Disabled. wxMSW draws native controls' disabled text in a system grey that ignores the
+# palette, which is why disabled buttons are barely legible on the dark theme today; the
+# owner-drawn controls use these instead. FG_DISABLED still clears 3:1 against BG_CARD, so
+# a disabled label is dim but readable rather than invisible.
+FG_DISABLED = wx.Colour(110, 118, 129)   # #6e7681
+BG_DISABLED = wx.Colour(35,  40,  52)    # #232834
+
+# Primary action. A single accent, shared by focus rings, the active tab indicator, links
+# and primary buttons, so the eye has exactly one thing to follow per screen.
+ACCENT          = wx.Colour(88,  166, 255)  # #58a6ff
+ACCENT_HOVER    = wx.Colour(121, 192, 255)  # #79c0ff
+ACCENT_PRESSED  = wx.Colour(56,  139, 253)  # #388bfd
+FG_ON_ACCENT    = wx.Colour(13,  17,  23)   # #0d1117 - dark text on the light accent fill
+FOCUS_RING      = wx.Colour(88,  166, 255)  # #58a6ff
+
+# Destructive action (Kill, Delete). Distinct from ACCENT_RED, which is a text/plot colour.
+DANGER        = wx.Colour(218, 54,  51)   # #da3633
+DANGER_HOVER  = wx.Colour(248, 81,  73)   # #f85149
+FG_ON_DANGER  = wx.Colour(255, 255, 255)  # #ffffff
+
+# Confirmed / running (Launch). ACCENT_GREEN is a row tint and far too dark for a fill that
+# has to carry a label, so the button green is its own token.
+SUCCESS        = wx.Colour(35,  134, 54)   # #238636
+SUCCESS_HOVER  = wx.Colour(46,  160, 67)   # #2ea043
+FG_ON_SUCCESS  = wx.Colour(255, 255, 255)  # #ffffff
+
+# ---------------------------------------------------------------------------
+# Spacing and radius scale, in DIPs. Pass through dip() before use.
+#
+# Every border= and AddSpacer() in the UI was a bare literal (5, 8, 10, 12, 24 all appear
+# within one panel), which is most of why the layout reads as arbitrary. These are the only
+# gaps the UI is allowed to use.
+# ---------------------------------------------------------------------------
+SP_XS  = 4
+SP_SM  = 8
+SP_MD  = 12
+SP_LG  = 16
+SP_XL  = 24
+SP_2XL = 32
+
+RADIUS_SM = 4    # inputs, small buttons
+RADIUS_MD = 6    # buttons, pickers
+RADIUS_LG = 10   # cards, popups
+
+# Stroke width for focus rings and control outlines, in DIPs.
+BORDER_WIDTH = 1
+FOCUS_WIDTH = 2
+
+
+# ---------------------------------------------------------------------------
 # Font tokens — Must be ThemeFont instances to delay C++ initialization
+#
+# A type scale, not a single size: with everything at FONT_UI the only way to signal "this
+# is a section, that is a field" was to draw a box around it, which is what makes the
+# current UI read as a wall of controls. Sizes are points, resolved against the display DPI
+# by wx, so these do not need dip().
 # ---------------------------------------------------------------------------
 FONT_UI   = ThemeFont(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Segoe UI")
 FONT_BOLD = ThemeFont(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD,   faceName="Segoe UI")
 FONT_CODE = ThemeFont(10, wx.FONTFAMILY_MODERN,  wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Consolas")
+
+# Card and dialog titles.
+FONT_H1 = ThemeFont(13, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Segoe UI")
+# Section headers inside a card, and tab labels.
+FONT_H2 = ThemeFont(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, faceName="Segoe UI")
+# Hints, units, status text - anything secondary to the control it annotates.
+FONT_SMALL = ThemeFont(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Segoe UI")
+# Dense monospace: hex views, address columns, log tails.
+FONT_CODE_SMALL = ThemeFont(9, wx.FONTFAMILY_MODERN, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL, faceName="Consolas")
+
+_FONTS = (FONT_UI, FONT_BOLD, FONT_CODE, FONT_H1, FONT_H2, FONT_SMALL, FONT_CODE_SMALL)
+
+# Face preferences, most wanted first. Segoe UI and Consolas do not exist off Windows, and
+# wx's fallback there is a serif face that looks nothing like the target platform, so the
+# harness screenshots would be misleading. Resolved once, in _init().
+_UI_FACES = ("Segoe UI", "Inter", "Noto Sans", "DejaVu Sans", "Cantarell", "Arial")
+_CODE_FACES = ("Consolas", "Cascadia Mono", "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", "Monospace")
 
 # ---------------------------------------------------------------------------
 # Dark-mode alternating row color for grids
@@ -152,6 +246,28 @@ _PALETTES = {
         "ACCENT_JUMP":  (0,   255, 0),
         "TIMER_WARN":   (210, 153, 34),
         "GRID_ROW_ALT": (25,  30,  40),
+        # Surfaces, borders and interaction states (see the token block above).
+        "BG_SURFACE":    (39,  45,  58),
+        "BORDER_SUBTLE": (44,  51,  64),
+        # BG_SURFACE sits ~1.1:1 from BG_CARD, so the border is what actually marks the
+        # edge of an input or picker and has to clear 3:1 on its own. #677081 measures
+        # 3.04:1; the old #3d4657 was 1.60:1 and the controls lost their outline.
+        "BORDER_STRONG": (103, 112, 129),
+        "BG_HOVER":      (44,  52,  68),
+        "BG_PRESSED":    (27,  32,  40),
+        "FG_DISABLED":   (110, 118, 129),
+        "BG_DISABLED":   (35,  40,  52),
+        "ACCENT":         (88,  166, 255),
+        "ACCENT_HOVER":   (121, 192, 255),
+        "ACCENT_PRESSED": (56,  139, 253),
+        "FG_ON_ACCENT":   (13,  17,  23),
+        "FOCUS_RING":     (88,  166, 255),
+        "DANGER":         (218, 54,  51),
+        "DANGER_HOVER":   (248, 81,  73),
+        "FG_ON_DANGER":   (255, 255, 255),
+        "SUCCESS":        (35,  134, 54),
+        "SUCCESS_HOVER":  (46,  160, 67),
+        "FG_ON_SUCCESS":  (255, 255, 255),
     },
     LIGHT: {
         "BG_MAIN":      (236, 239, 244),  # #eceff4 - light grey base
@@ -180,6 +296,34 @@ _PALETTES = {
         # is worse still. #8a6100 measures 5.20:1.
         "TIMER_WARN":   (138, 97,  0),    # #8a6100
         "GRID_ROW_ALT": (246, 248, 250),  # #f6f8fa - alternating row on white cells
+        # Surfaces, borders and interaction states. Light needs the opposite relationship
+        # to dark: a raised surface gets *lighter* than the card, and hover gets darker,
+        # because there is no room to brighten past white.
+        "BG_SURFACE":    (255, 255, 255),  # #ffffff
+        "BORDER_SUBTLE": (216, 222, 228),  # #d8dee4
+        # As on dark: BG_SURFACE is white against a near-white card, so the border carries
+        # the edge by itself. #88919a measures 3.01:1; #afb8c1 was 1.89:1.
+        "BORDER_STRONG": (136, 145, 154),  # #88919a
+        "BG_HOVER":      (234, 238, 242),  # #eaeef2
+        "BG_PRESSED":    (215, 222, 229),  # #d7dee5
+        # #838c96 measures 3.01:1 against BG_DISABLED: dim, still legible. The previous
+        # #8c959f cleared the card but only managed 2.68:1 against the disabled fill it is
+        # actually drawn on.
+        "FG_DISABLED":   (131, 140, 150),  # #838c96
+        "BG_DISABLED":   (238, 241, 244),  # #eef1f4
+        # The accent has to carry white text here, so it is the deeper blue rather than the
+        # dark palette's bright one: #0969da measures 4.61:1 against white.
+        "ACCENT":         (9,   105, 218),  # #0969da
+        "ACCENT_HOVER":   (7,   87,  186),  # #0757ba
+        "ACCENT_PRESSED": (5,   69,  148),  # #054594
+        "FG_ON_ACCENT":   (255, 255, 255),  # #ffffff
+        "FOCUS_RING":     (9,   105, 218),  # #0969da
+        "DANGER":         (207, 34,  46),   # #cf222e - 4.83:1 against white
+        "DANGER_HOVER":   (167, 26,  36),   # #a71a24
+        "FG_ON_DANGER":   (255, 255, 255),  # #ffffff
+        "SUCCESS":        (26,  127, 55),   # #1a7f37 - 4.54:1 against white
+        "SUCCESS_HOVER":  (20,  103, 44),   # #14672c
+        "FG_ON_SUCCESS":  (255, 255, 255),  # #ffffff
     },
 }
 
@@ -234,16 +378,74 @@ def set_theme(mode: str) -> str:
     return mode
 
 
-def _read_theme_name() -> str:
-    """Read [gui] theme from cfg.ini, preferring the user file over the packaged one."""
+def _read_gui_setting(key: str, fallback: str) -> str:
+    """Read one [gui] key from cfg.ini, preferring the user file over the packaged one."""
     config = configparser.ConfigParser()
     try:
         config.read(config_paths())
     except configparser.Error as e:
-        log.warning("Could not parse cfg.ini for the theme setting: %s", e)
-        return DEFAULT_THEME
+        log.warning("Could not parse cfg.ini for the [gui] %s setting: %s", key, e)
+        return fallback
 
-    return config.get("gui", "theme", fallback=DEFAULT_THEME).strip().lower()
+    return config.get("gui", key, fallback=fallback).strip().lower()
+
+
+def _read_theme_name() -> str:
+    """Read [gui] theme from cfg.ini, preferring the user file over the packaged one."""
+    return _read_gui_setting("theme", DEFAULT_THEME)
+
+
+# Windows 11 21H2. Used as the cut-off for wxMSW's dark mode opt-in, see below.
+WINDOWS_11_BUILD = 22000
+
+
+def native_dark_mode_allowed() -> tuple:
+    """Whether to opt wxMSW into dark mode for the widgets we cannot draw, and why.
+
+    The opt-in is all or nothing, and on Windows 10 one part of it is worse than not
+    having it: popup menus. wxMSW draws menu items itself once dark mode is on, filling
+    the item background from the `DarkMode::Menu` and `DarkMode_ImmersiveStart::Menu`
+    visual-style classes. Those classes are a Windows 11 addition; on Windows 10 the
+    lookup fails, the background is left to the system - which paints it light - and the
+    text is drawn in the dark-mode colour, so the item reads white on white. A light menu
+    beside a dark window looks worse than one that follows the theme, but it is legible,
+    and legible wins. Reported from a Windows 10 guest VM.
+
+    The rest of the opt-in (tooltips, the grid cell editor, common dialogs) goes with it,
+    since wx offers no way to keep those and skip menus. Scrollbars and combo drop-downs
+    are unaffected - apply_native_theme() sets `DarkMode_Explorer` on each widget directly,
+    which Windows 10 1809+ does support.
+
+    Override with cfg.ini when a build behaves differently to the rule:
+
+        [gui]
+        native_dark_mode = always   ; always | never | auto (default)
+
+    Returns (allowed, reason); the reason is logged.
+    """
+    setting = _read_gui_setting("native_dark_mode", "auto")
+    if setting in ("always", "on", "true", "yes", "1"):
+        return True, "forced on by cfg.ini"
+    if setting in ("never", "off", "false", "no", "0"):
+        return False, "disabled in cfg.ini"
+
+    if not sys.platform.startswith("win"):
+        return False, "not Windows"
+
+    try:
+        build = sys.getwindowsversion().build
+    except (AttributeError, OSError):
+        # Nothing in the GUI may fail to start because a platform probe is unavailable.
+        return False, "cannot read the Windows build"
+
+    if build < WINDOWS_11_BUILD:
+        return (
+            False,
+            f"Windows build {build} has no dark popup menu theme "
+            f"(needs {WINDOWS_11_BUILD}+); menu text would be unreadable",
+        )
+
+    return True, f"Windows build {build}"
 
 
 def _write_theme_name(mode: str) -> None:
@@ -283,6 +485,25 @@ def ToggleTheme() -> str:
     return mode
 
 
+def _resolve_face(candidates, fallbackFamily):
+    """First installed face from *candidates*, or the system default for the family.
+
+    wx silently substitutes a missing face, and what it substitutes off Windows is a serif
+    that misrepresents how the UI will actually look - which would make every screenshot
+    taken on the dev box misleading.
+    """
+    try:
+        installed = {name.lower() for name in wx.FontEnumerator.GetFacenames()}
+    except Exception:
+        return candidates[0]
+
+    for face in candidates:
+        if face.lower() in installed:
+            return face
+
+    return wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT).GetFaceName()
+
+
 def _init():
     """Select the palette and build all wx.Font objects. Called once after wx.App exists."""
     global _initialized
@@ -291,11 +512,71 @@ def _init():
 
     set_theme(_read_theme_name())
 
-    FONT_UI._init_real()
-    FONT_BOLD._init_real()
-    FONT_CODE._init_real()
+    uiFace = _resolve_face(_UI_FACES, wx.FONTFAMILY_DEFAULT)
+    codeFace = _resolve_face(_CODE_FACES, wx.FONTFAMILY_MODERN)
+    for font in _FONTS:
+        # _args is (pointSize, family, style, weight); the face is a keyword.
+        family = font._args[1]
+        font._kwargs["faceName"] = codeFace if family == wx.FONTFAMILY_MODERN else uiFace
+        font._init_real()
 
     _initialized = True
+
+
+def dip(window, value):
+    """Scale a DIP spacing/radius token to physical pixels for *window*'s display.
+
+    The tokens are declared at 96 DPI. FromDIP is per-window because a multi-monitor setup
+    can mix scale factors, and it needs a realised window, so this is called at layout time
+    rather than at import time.
+    """
+    if window is None:
+        return value
+    try:
+        return window.FromDIP(value)
+    except Exception:
+        # wx < 4.1 and some GTK builds; the unscaled value is the 96 DPI answer.
+        return value
+
+
+def dip_size(window, width, height):
+    """wx.Size from DIP dimensions. -1 (meaning 'best size') is passed through unscaled."""
+    return wx.Size(
+        width if width < 0 else dip(window, width),
+        height if height < 0 else dip(window, height),
+    )
+
+
+def band_rows(listCtrl):
+    """Shade every other row of a report-mode ListCtrl, as the grids are shaded.
+
+    wx can do this itself, but only for virtual controls: EnableAlternateRowColours asserts
+    otherwise. Ours are ordinary controls, so the colour goes on per item, which means this
+    has to be called after the items are inserted and again after they are replaced.
+    """
+    for row in range(listCtrl.GetItemCount()):
+        listCtrl.SetItemBackgroundColour(
+            row, GRID_ROW_ALT if row % 2 == 0 else BG_INPUT
+        )
+
+
+def lock_font(widget, font):
+    """Set *font* on *widget* and stop apply_theme from overwriting it.
+
+    The theme walker assigns FONT_UI to every StaticText, Button and CheckBox it sees,
+    which is right for body text and wrong for anything deliberately set to another step of
+    the type scale: a card title styled FONT_H2 at construction came back out of the walker
+    as FONT_UI, so headings were indistinguishable from the rows beneath them.
+    """
+    widget.SetFont(font)
+    widget._lockedFont = font
+    return widget
+
+
+def _set_font(widget, font):
+    """Apply the theme's font unless the widget asked to keep its own."""
+    locked = getattr(widget, "_lockedFont", None)
+    widget.SetFont(locked if locked is not None else font)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +647,16 @@ def apply_theme(widget):
     if isinstance(widget, wx.TopLevelWindow):
         apply_window_theme(widget)
     _style_widget(widget)
+    # Recolouring a widget (SetBackgroundColour, etc.) does not by itself repaint it, and an
+    # owner-drawn ui_kit control (Field, Button, Picker, TabBar, ...) reads the current
+    # palette only from its own _OnPaint - it has no other code path that would pick up the
+    # change. Invalidating the whole window from the top, as RefreshTheme() used to do
+    # alone, does not reach separate native child windows on MSW (each is its own HWND, and
+    # Refresh() there is a plain InvalidateRect on that one window). Explicitly refreshing
+    # every widget on the way down is what actually gets them all repainted - e.g. without
+    # this, a disabled ui.Field (the Start tab's download-path box) kept showing the
+    # palette's old BG_DISABLED fill after a Dark <-> Light toggle.
+    widget.Refresh()
     for child in widget.GetChildren():
         apply_theme(child)
 
@@ -395,11 +686,25 @@ def _log_style_change(w):
 
 def _style_widget(w):
     """Apply colours / font to a single widget based on its runtime type."""
-    # Native Windows subtheme for scrollbars, borders, native arrows, etc.
+    # ui_kit.Field builds its wx.TextCtrl with BORDER_NONE on purpose and draws its own
+    # rounded, focus-aware border around it (see Field's docstring) - forcing BORDER_SIMPLE
+    # back on below would draw a second, square native border inside that one, showing up
+    # as a hard grey box around the text on top of the intended rounded outline.
+    from . import ui_kit
+
+    isFieldCtrl = isinstance(w, wx.TextCtrl) and isinstance(w.GetParent(), ui_kit.Field)
+
+    # Native Windows subtheme for scrollbars, borders, native arrows, etc. A disabled
+    # Field's background used to stay the OS's pale disabled fill regardless of this -
+    # that turned out to be Windows routing a WS_DISABLED Edit control's painting through
+    # WM_CTLCOLORSTATIC (which ignores our colours) rather than anything UxTheme does, so
+    # it is fixed at the source in ui_kit._FieldTextCtrl instead (Enable/Disable toggle
+    # SetEditable() there, so the control never actually goes WS_DISABLED) and this can
+    # stay unconditional.
     apply_native_theme(w)
 
     # Apply solid borders around interactive controls to ensure clear boundaries and relief
-    if isinstance(w, (wx.TextCtrl, wx.ComboBox, wx.Choice, wx.ListBox, wx.ListCtrl, gridlib.Grid)):
+    if not isFieldCtrl and isinstance(w, (wx.TextCtrl, wx.ComboBox, wx.Choice, wx.ListBox, wx.ListCtrl, gridlib.Grid)):
         try:
             style = w.GetWindowStyleFlag()
             wanted = style & ~(
@@ -421,13 +726,21 @@ def _style_widget(w):
     if isinstance(w, wx.Panel):
         w.SetBackgroundColour(BG_CARD)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
+        return
+
+    # wx.SplitterWindow is not a wx.Panel, so it fell through this walk untouched, staying
+    # at the OS default background. That is the gutter/sash colour and also what a child
+    # (e.g. ui.Notice) reads via GetBackgroundColour() if it is parented directly to the
+    # splitter instead of a themed panel - so it must match BG_CARD too.
+    if isinstance(w, wx.SplitterWindow):
+        w.SetBackgroundColour(BG_CARD)
         return
 
     # --- Static text labels ---
     if isinstance(w, wx.StaticText):
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         return
 
     # --- Static lines (separators) ---
@@ -437,60 +750,60 @@ def _style_widget(w):
 
     # --- Text controls (single-line and multiline) ---
     if isinstance(w, wx.TextCtrl):
-        w.SetBackgroundColour(BG_INPUT)
-        w.SetForegroundColour(FG_PRIMARY)
+        if w.IsEnabled():
+            w.SetBackgroundColour(BG_INPUT)
+            w.SetForegroundColour(FG_PRIMARY)
+        else:
+            # Matches the BG_DISABLED/FG_DISABLED look ui_kit.Field's own owner-drawn
+            # backdrop already uses for a disabled field - otherwise the native control
+            # inside it kept the enabled BG_INPUT fill no matter its enabled state.
+            w.SetBackgroundColour(BG_DISABLED)
+            w.SetForegroundColour(FG_DISABLED)
         # Preserve font if caller already set a code font (Consolas)
         if w.GetFont().GetFaceName().lower() not in ("consolas",):
-            w.SetFont(FONT_UI)
+            _set_font(w, FONT_UI)
         return
 
     # --- ComboBox / Choice ---
     if isinstance(w, (wx.ComboBox, wx.Choice)):
         w.SetBackgroundColour(BG_DROPDOWN)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         return
 
     # --- ListBox ---
     if isinstance(w, wx.ListBox):
         w.SetBackgroundColour(BG_INPUT)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         return
 
     # --- ListCtrl (used in debugger panels) ---
     if isinstance(w, wx.ListCtrl):
         w.SetBackgroundColour(BG_INPUT)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_CODE)
+        _set_font(w, FONT_CODE)
+        # Row banding is not done here: wx's EnableAlternateRowColours asserts unless the
+        # control is virtual, and none of ours are. Callers run band_rows() once they have
+        # inserted their items.
         return
 
     # --- TreeCtrl (process tree window) ---
     if isinstance(w, wx.TreeCtrl):
         w.SetBackgroundColour(BG_INPUT)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         return
 
-    # --- Buttons (Support both wx.Button and generic GenButton) ---
-    from wx.lib import buttons
-    if isinstance(w, (wx.Button, buttons.GenButton)):
-        label = w.GetLabel().lower()
-        # Semantic color coding: Highlight destructive, emergency or cancel actions with alert red
-        if any(x in label for x in ["kill", "terminate", "delete", "cancel", "stop"]):
-            w.SetBackgroundColour(BG_RED_ALERT)
-            w.SetForegroundColour(FG_RED_ALERT)
-        elif "launch" in label:
-            # The counterpart to Kill: the one control that starts a detonation. Shares
-            # ACCENT_GREEN with the debugger's CIP row rather than adding a token, because
-            # that colour is already defined as a fill sat underneath FG_PRIMARY and is
-            # tuned for both palettes - retune it there and this follows.
-            w.SetBackgroundColour(ACCENT_GREEN)
-            w.SetForegroundColour(FG_PRIMARY)
-        else:
-            w.SetBackgroundColour(BG_BUTTON)
-            w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+    # --- Buttons ---
+    # Every button in the app is a ui_kit.Button, which draws itself and derives from
+    # wx.Control rather than wx.Button, so it never lands here. This branch is the
+    # fallback that keeps a stray native button legible instead of system-coloured;
+    # semantic colouring lives in the ui_kit variants (PRIMARY / DANGEROUS / ...).
+    if isinstance(w, wx.Button):
+        w.SetBackgroundColour(BG_BUTTON)
+        w.SetForegroundColour(FG_PRIMARY)
+        _set_font(w, FONT_UI)
         return
 
     # --- CheckBoxes and RadioButtons ---
@@ -498,33 +811,29 @@ def _style_widget(w):
     # through this walk entirely and renders in system colours.
     if isinstance(w, (wx.CheckBox, wx.RadioButton)):
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         return
 
     # --- StaticBox (group box containers) ---
     if isinstance(w, wx.StaticBox):
         w.SetBackgroundColour(BG_CARD)
         w.SetForegroundColour(ACCENT_CYAN)    # Highlight group box borders/labels with Cyan
-        w.SetFont(FONT_BOLD)
+        _set_font(w, FONT_BOLD)
         return
 
     # --- Notebook tabs ---
-    import wx.lib.agw.flatnotebook as fnb
-    if isinstance(w, (wx.Notebook, fnb.FlatNotebook)):
+    # wx.Notebook only: the main shell is a wx.Simplebook with a drawn ui.TabBar, and the
+    # debug console's inner notebook is the last plain one left.
+    if isinstance(w, wx.Notebook):
         w.SetBackgroundColour(BG_MAIN)
         w.SetForegroundColour(FG_PRIMARY)
-        if isinstance(w, fnb.FlatNotebook):
-            w.SetActiveTabColour(BG_CARD)
-            w.SetActiveTabTextColour(FG_PRIMARY)
-            w.SetNonActiveTabTextColour(FG_SECONDARY)
-            w.SetTabAreaColour(BG_MAIN)
         return
 
     # --- CollapsiblePane ---
     if isinstance(w, wx.CollapsiblePane):
         w.SetBackgroundColour(BG_CARD)
         w.SetForegroundColour(FG_PRIMARY)
-        w.SetFont(FONT_UI)
+        _set_font(w, FONT_UI)
         # The label ("Debugger options", "analysis.conf") is drawn by an internal wx.Control
         # that is neither a StaticText nor a Button, so it matches none of the branches above
         # and keeps the default black text. Style it directly; skip the inner pane, which is a
@@ -533,7 +842,7 @@ def _style_widget(w):
             if not isinstance(child, wx.Panel):
                 child.SetBackgroundColour(BG_CARD)
                 child.SetForegroundColour(FG_PRIMARY)
-                child.SetFont(FONT_UI)
+                _set_font(child, FONT_UI)
                 child.Refresh()
         return
 
@@ -544,10 +853,18 @@ def _style_widget(w):
         w.SetDefaultCellFont(FONT_UI)
         w.SetLabelBackgroundColour(BG_CARD)
         w.SetLabelTextColour(FG_SECONDARY)
+        w.SetLabelFont(FONT_BOLD)
         w.SetGridLineColour(BG_MAIN)
+        # The cursor cell is outlined in system black otherwise, which reads as a hole in
+        # a dark grid.
+        w.SetCellHighlightColour(ACCENT)
         # Override the system highlight, which is too saturated to read our text against.
         w.SetSelectionBackground(BG_SELECT)
         w.SetSelectionForeground(FG_SELECT)
+        # Header height follows the font, but only where there is a header: several panels
+        # hide theirs with SetColLabelSize(0) and must stay hidden.
+        if w.GetColLabelSize() > 0:
+            w.SetColLabelSize(dip(w, 26))
         return
 
     # --- Top-level windows (secondary frames and dialogs) ---

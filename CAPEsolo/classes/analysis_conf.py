@@ -17,7 +17,8 @@ import logging
 
 import wx
 
-from .theme import FONT_CODE, apply_theme
+from . import ui_kit as ui
+from .theme import FONT_CODE, SP_SM, SP_XS, apply_theme, dip
 
 log = logging.getLogger(__name__)
 
@@ -183,13 +184,13 @@ class AnalysisConfPanel(wx.Panel):
         self.vbox = wx.BoxSizer(wx.VERTICAL)
 
         modeBox = wx.BoxSizer(wx.HORIZONTAL)
-        self.formRadio = wx.RadioButton(self, label="Form", style=wx.RB_GROUP)
-        self.rawRadio = wx.RadioButton(self, label="Raw")
+        self.formRadio = ui.Radio(self, label="Form", style=wx.RB_GROUP)
+        self.rawRadio = ui.Radio(self, label="Raw")
         self.formRadio.SetValue(True)
         for radio in (self.formRadio, self.rawRadio):
             radio.Bind(wx.EVT_RADIOBUTTON, self.OnModeChanged)
-            modeBox.Add(radio, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=10)
-        self.vbox.Add(modeBox, flag=wx.BOTTOM, border=5)
+            modeBox.Add(radio, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=dip(self, SP_SM))
+        self.vbox.Add(modeBox, flag=wx.BOTTOM, border=dip(self, SP_XS))
 
         # Built by Load once the keys are known.
         self.formSizer = wx.BoxSizer(wx.VERTICAL)
@@ -197,7 +198,7 @@ class AnalysisConfPanel(wx.Panel):
 
         self.rawEditor = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         self.rawEditor.SetFont(FONT_CODE)
-        self.vbox.Add(self.rawEditor, proportion=1, flag=wx.EXPAND | wx.TOP, border=5)
+        self.vbox.Add(self.rawEditor, proportion=1, flag=wx.EXPAND | wx.TOP, border=dip(self, SP_XS))
         self.rawEditor.Hide()
 
         self.SetSizer(self.vbox)
@@ -208,7 +209,7 @@ class AnalysisConfPanel(wx.Panel):
             with open(path, "r") as hfile:
                 text = hfile.read()
         except OSError as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to load {path}: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
             return
@@ -242,33 +243,36 @@ class AnalysisConfPanel(wx.Panel):
             grid = wx.FlexGridSizer(cols=columns, hgap=12, vgap=6)
             for key in keys:
                 grid.Add(self.BuildControl(box.GetStaticBox(), key), flag=wx.ALIGN_CENTER_VERTICAL)
-            box.Add(grid, flag=wx.ALL, border=5)
-            self.formSizer.Add(box, flag=wx.EXPAND | wx.BOTTOM, border=6)
+            box.Add(grid, flag=wx.ALL, border=dip(self, SP_XS))
+            self.formSizer.Add(box, flag=wx.EXPAND | wx.BOTTOM, border=dip(self, SP_XS))
 
         self.Layout()
 
     def BuildControl(self, parent, key):
         """One control for one key, with its comment as the tooltip."""
         if key.IsBoolean():
-            key.control = wx.CheckBox(parent, label=key.name)
+            key.control = ui.Check(parent, label=key.name)
             key.control.SetValue(_Coerce(key.value) is True)
             item = key.control
         else:
             row = wx.BoxSizer(wx.HORIZONTAL)
             label = wx.StaticText(parent, label=f"{key.name}:")
             width = 150 if key.name in WIDE_KEYS else 70
-            key.control = wx.TextCtrl(parent, value=key.value, size=wx.Size(width, -1))
-            row.Add(label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=4)
-            row.Add(key.control, flag=wx.ALIGN_CENTER_VERTICAL)
+            field = ui.Field(parent, value=key.value, size=wx.Size(width, -1))
+            # key.control is what the save path reads GetValue off, so it stays the
+            # TextCtrl; the sizer gets the drawn wrapper.
+            key.control = field.ctrl
+            row.Add(label, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=dip(self, SP_XS))
+            row.Add(field, flag=wx.ALIGN_CENTER_VERTICAL)
             item = row
 
         if not key.enabled:
             # Disabled in the default file, so it needs an explicit opt-in before it is
             # written; the checkbox in front of it is that switch.
             wrapper = wx.BoxSizer(wx.HORIZONTAL)
-            key.toggle = wx.CheckBox(parent, label="")
+            key.toggle = ui.Check(parent, label="")
             key.toggle.SetToolTip(f"Write {key.name} to analysis.conf")
-            wrapper.Add(key.toggle, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=2)
+            wrapper.Add(key.toggle, flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=dip(self, 2))
             wrapper.Add(item, flag=wx.ALIGN_CENTER_VERTICAL)
             item = wrapper
 
@@ -333,7 +337,7 @@ class AnalysisConfPanel(wx.Panel):
         try:
             parser.read_string(text)
         except configparser.Error as e:
-            wx.MessageBox(
+            ui.message(
                 f"analysis.conf could not be parsed, so the form was left as it was:\n{e}",
                 "Invalid configuration",
                 wx.OK | wx.ICON_ERROR,

@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same PR makes the first run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # wxPython has no manylinux wheel, and building it from the sdist takes ~20 min.
+      # Ubuntu's package is wxPython 4.2 on GTK3, which is what the theme and contrast
+      # tests need. The application's other dependencies (pywin32, yara, sflock, ...) are
+      # deliberately not installed: nothing under tests/ imports them. Linux is fine here
+      # because these tests never open a window - they check tokens, contrast ratios and
+      # the dialog's button tables.
+      - name: Install wxPython and pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-wxgtk4.0 python3-pytest
+
+      - name: Byte-compile
+        run: python3 -m compileall -q CAPEsolo tools
+
+      - name: Unit tests
+        run: python3 -m pytest tests -q
+
+  ui:
+    name: ui render
+    # Windows, not Linux with Xvfb. CAPEsolo ships on Windows and nothing else: the
+    # native dark mode opt-in, the popup menus, the combo and grid drawing and the DPI
+    # handling are all wxMSW code paths that GTK cannot exercise, so a green GTK render
+    # said very little. Headless GTK also cannot run the modal-dialog checks at all -
+    # without a window manager wxDialog's nested loop never exits, which hung the job
+    # instead of failing it. A runner has a real window station, so the whole harness
+    # runs and the screenshots are of the product as users see it.
+    runs-on: windows-latest
+    # A GUI test can stall rather than fail - a modal nothing dismisses, a stub a widget
+    # waits on. Without this the job sits at the runner's six-hour limit and its log is
+    # unreadable until it ends.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only wxPython: it has Windows wheels, and the harness stubs every other import
+      # (pywin32, yara, sflock, ...) so a render cannot depend on which of them a host
+      # happens to have.
+      - name: Install wxPython
+        run: python -m pip install --upgrade pip wxPython
+
+      # Builds MainFrame and every result panel in both themes, switches the theme at
+      # runtime, opens the dialogs and drives four real modal loops. Catches the usual
+      # breakage - a widget constructed with an argument it no longer takes, a sizer added
+      # to itself, a missing token. UIDEV_TIMEOUT arms the harness's own watchdog, which
+      # dumps every thread's stack before the step timeout kills the job with no output.
+      - name: Panel smoke test
+        timeout-minutes: 8
+        env:
+          UIDEV_TIMEOUT: "420"
+        run: python tools/uidev/smoke.py
+
+      # Renders the visual-regression shot list and compares it with the recorded
+      # baseline. A missing baseline is recorded rather than failed, so the first run on a
+      # new platform seeds it. The baseline carries one machine's font stack, so a
+      # mismatch is often just fonts; the renders and diffs are uploaded for a human to
+      # look at rather than failing the build.
+      - name: Render UI
+        id: render
+        timeout-minutes: 12
+        continue-on-error: true
+        run: python tools/uidev/vrt.py --out "${env:RUNNER_TEMP}\vrt"
+
+      - name: Upload renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-renders
+          path: |
+            ${{ runner.temp }}/vrt
+            tools/uidev/baseline
+          if-no-files-found: warn
+
+      - name: Note visual differences
+        if: steps.render.outcome == 'failure'
+        run: |
+          echo "::notice::Renders differ from the baseline. Download the ui-renders
+          artifact and compare. If the change is intended, re-record with
+          'python tools/uidev/vrt.py --update' on Windows."

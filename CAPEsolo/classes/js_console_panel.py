@@ -8,9 +8,10 @@ from CAPEsolo.capelib.js_streams import AssembleConversations, AssembleDns, Drop
 
 from CAPEsolo.capelib.path_utils import path_exists
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme
+from .theme import FONT_CODE, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
 ALL = "<All>"
 # Order the kind filter offers; a kind only appears when it has rows.
@@ -45,19 +46,19 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         vbox.AddSpacer(10)
-        self.jsLogButton = wx.Button(self, label="Process JS Log")
+        self.jsLogButton = ui.Button(self, label="Process JS Log", variant=ui.PRIMARY)
         self.jsLogButton.Bind(wx.EVT_BUTTON, self.ProcessJsLog)
         self.jsLogButton.Disable()
-        vbox.Add(self.jsLogButton, proportion=0, flag=wx.ALL, border=5)
+        vbox.Add(self.jsLogButton, proportion=0, flag=wx.ALL, border=dip(self, SP_XS))
 
-        self.categoryDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
+        self.categoryDropdown = ui.Picker(self)
         self.categoryDropdown.Bind(wx.EVT_COMBOBOX, self.OnCatView)
-        vbox.Add(wx.StaticText(self, label="Show:"), flag=wx.LEFT | wx.TOP, border=5)
+        vbox.Add(wx.StaticText(self, label="Show:"), flag=wx.LEFT | wx.TOP, border=dip(self, SP_XS))
         vbox.Add(
             self.categoryDropdown,
             proportion=0,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         # Grid over detail pane, matching the Network tab's convention.
@@ -86,59 +87,61 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
             self.splitter,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.pagination_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.first_page_button = wx.Button(self, label="<<")
+        self.first_page_button = ui.Button(self, label="<<")
         self.first_page_button.Bind(wx.EVT_BUTTON, self.OnFirstPage)
         self.first_page_button.Disable()
-        self.pagination_sizer.Add(self.first_page_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.first_page_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.prev_button = wx.Button(self, label="Previous")
+        self.prev_button = ui.Button(self, label="Previous")
         self.prev_button.Bind(wx.EVT_BUTTON, self.OnPrevPage)
         self.prev_button.Disable()
-        self.pagination_sizer.Add(self.prev_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.prev_button, 0, wx.ALL, dip(self, SP_XS))
 
         self.page_label = wx.StaticText(self, label="Page 1 of 1")
         self.pagination_sizer.Add(self.page_label, 0, wx.ALL | wx.CENTER, 5)
 
-        self.page_input = wx.TextCtrl(
+        self.page_field = ui.Field(
             self, value="1", size=wx.Size(50, -1), style=wx.TE_PROCESS_ENTER
         )
+        self.page_input = self.page_field.ctrl
         self.page_input.Bind(wx.EVT_TEXT_ENTER, self.OnGoToPage)
-        self.pagination_sizer.Add(self.page_input, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.page_field, 0, wx.ALL, dip(self, SP_XS))
 
-        self.go_button = wx.Button(self, label="Go")
+        self.go_button = ui.Button(self, label="Go")
         self.go_button.Bind(wx.EVT_BUTTON, self.OnGoToPage)
-        self.pagination_sizer.Add(self.go_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.go_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.next_button = wx.Button(self, label="Next")
+        self.next_button = ui.Button(self, label="Next")
         self.next_button.Bind(wx.EVT_BUTTON, self.OnNextPage)
         self.next_button.Disable()
-        self.pagination_sizer.Add(self.next_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.next_button, 0, wx.ALL, dip(self, SP_XS))
 
-        self.last_page_button = wx.Button(self, label=">>")
+        self.last_page_button = ui.Button(self, label=">>")
         self.last_page_button.Bind(wx.EVT_BUTTON, self.OnLastPage)
         self.last_page_button.Disable()
-        self.pagination_sizer.Add(self.last_page_button, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.last_page_button, 0, wx.ALL, dip(self, SP_XS))
 
         self.items_per_page_choices = [25, 50, 100, 500, 1000, 10000]
-        self.items_per_page_dropdown = wx.ComboBox(
+        self.items_per_page_dropdown = ui.Picker(
             self,
             value=str(self.items_per_page),
             choices=[str(c) for c in self.items_per_page_choices],
-            style=wx.CB_READONLY,
         )
         self.items_per_page_dropdown.Bind(wx.EVT_COMBOBOX, self.OnItemsPerPageChange)
         self.pagination_sizer.Add(
             wx.StaticText(self, label="Rows per page:"), 0, wx.ALL | wx.CENTER, 5
         )
-        self.pagination_sizer.Add(self.items_per_page_dropdown, 0, wx.ALL, 5)
+        self.pagination_sizer.Add(self.items_per_page_dropdown, 0, wx.ALL, dip(self, SP_XS))
 
         vbox.Add(self.pagination_sizer, 0, wx.CENTER | wx.BOTTOM, 5)
-        self.pagination_sizer.Hide(True)
+        # ShowItems, not Hide(True): wx.Sizer.Hide is overloaded on index, so the bool
+        # resolved to index 1 and hid the Previous button rather than the whole row.
+        self.pagination_sizer.ShowItems(False)
 
         self.SetSizer(vbox)
         apply_theme(self)
@@ -167,7 +170,7 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
                 + self._BuildEventRows(jslog)
             )
             self.LoadKindFilter()
-            self.pagination_sizer.Show(True)
+            self.pagination_sizer.ShowItems(True)
             self.current_page = 1
             self.AddTableData()
             self.grid.Show()
@@ -431,13 +434,13 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
                 self.current_page = page_num
                 self.AddTableData()
             else:
-                wx.MessageBox(
+                ui.message(
                     f"Page number must be between 1 and {total_pages}.",
                     "Invalid Page Number",
                     wx.OK | wx.ICON_ERROR,
                 )
         except ValueError:
-            wx.MessageBox(
+            ui.message(
                 "Please enter a valid integer page number.",
                 "Invalid Input",
                 wx.OK | wx.ICON_ERROR,

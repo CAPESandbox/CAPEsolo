@@ -13,10 +13,11 @@ from CAPEsolo.capelib.objects import File
 from CAPEsolo.capelib.parse_pe import IsPEImage
 from CAPEsolo.capelib.utils import JsonPathExists, LoadFilesJson
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .hexview_window import HexViewWindow
 from .pe_window import PeWindow
-from .theme import GRID_ROW_ALT, apply_theme
+from .theme import GRID_ROW_ALT, SP_XS, apply_theme, dip
 from .vt_helper import (
     confirm_vt_upload,
     format_vt_rows,
@@ -134,7 +135,7 @@ class PayloadsPanel(wx.Panel):
         grid.AutoSizeColumns()
         grid.SetColSize(0, 120)
         grid.AutoSizeRows()
-        self.panelsizer.Add(grid, proportion=0, flag=wx.EXPAND | wx.ALL, border=5)
+        self.panelsizer.Add(grid, proportion=0, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
         # These grids are built after the panel is constructed, so the usual
         # one-shot apply_theme never reached them: they kept black default text
         # while ApplyAlternateRowShading painted rows GRID_ROW_ALT, which is
@@ -143,7 +144,7 @@ class PayloadsPanel(wx.Panel):
         self.ApplyAlternateRowShading(grid)
 
         buttonBox = wx.BoxSizer(wx.HORIZONTAL)
-        hexBtn = wx.Button(self.panel, label="Hex View")
+        hexBtn = ui.Button(self.panel, label="Hex View")
         hexBtn.Bind(wx.EVT_BUTTON, self.OnShowHexview)
         self.button_to_path[hexBtn.GetId()] = path
         buttonBox.Add(hexBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
@@ -155,21 +156,21 @@ class PayloadsPanel(wx.Panel):
         with path.open("rb") as hfile:
             head = hfile.read(1024)
         if IsPEImage(head):
-            peBtn = wx.Button(self.panel, label="PE")
+            peBtn = ui.Button(self.panel, label="PE")
             peBtn.Bind(wx.EVT_BUTTON, self.OnShowPe)
             self.button_to_path[peBtn.GetId()] = path
             buttonBox.Add(peBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
 
-        showBtn = wx.Button(self.panel, label="Show in Explorer")
+        showBtn = ui.Button(self.panel, label="Show in Explorer")
         showBtn.Bind(wx.EVT_BUTTON, self.OnShowInExplorer)
         self.button_to_path[showBtn.GetId()] = path
         buttonBox.Add(showBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
 
-        vtBtn = wx.Button(self.panel, label="VirusTotal")
+        vtBtn = ui.Button(self.panel, label="VirusTotal")
         vtBtn.Bind(wx.EVT_BUTTON, self.OnVirusTotalLookup)
         buttonBox.Add(vtBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
 
-        uploadBtn = wx.Button(self.panel, label="Upload to VT")
+        uploadBtn = ui.Button(self.panel, label="Upload to VT")
         uploadBtn.Bind(wx.EVT_BUTTON, self.OnVtUpload)
         uploadBtn.Hide()  # revealed only when a lookup finds the payload is not already on VT
         buttonBox.Add(uploadBtn, 0, wx.ALIGN_LEFT | wx.ALL, 5)
@@ -301,7 +302,7 @@ class PayloadsPanel(wx.Panel):
                 viewer_window.Show()
 
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to execute the command: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
 
@@ -317,7 +318,7 @@ class PayloadsPanel(wx.Panel):
                 viewer_window.Show()
 
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to execute the command: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
 
@@ -328,7 +329,7 @@ class PayloadsPanel(wx.Panel):
                 return
             path = Path(path)
             if not path.exists():
-                wx.MessageBox(
+                ui.message(
                     f"File not found:\n{path}", "Show in Explorer", wx.OK | wx.ICON_WARNING
                 )
                 return
@@ -336,7 +337,7 @@ class PayloadsPanel(wx.Panel):
             # /select, highlights the file in its folder. List form avoids shell quoting issues.
             subprocess.Popen(["explorer", "/select,", str(path)])
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to open Explorer: {e}", "Error", wx.OK | wx.ICON_ERROR
             )
 
@@ -354,7 +355,7 @@ class PayloadsPanel(wx.Panel):
     def _OnVtDone(self, grid, button, uploadBtn, result):
         if result.get("error"):
             button.Enable()
-            wx.MessageBox(
+            ui.message(
                 result.get("msg", "VirusTotal lookup failed"), "VirusTotal", wx.OK | wx.ICON_ERROR
             )
             return
@@ -389,7 +390,7 @@ class PayloadsPanel(wx.Panel):
         if result.get("error"):
             button.Enable()
             self._SetStatus("VirusTotal upload failed")
-            wx.MessageBox(result.get("msg", "Upload failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
+            ui.message(result.get("msg", "Upload failed"), "VirusTotal", wx.OK | wx.ICON_ERROR)
             return
         self._SetStatus("Uploaded to VirusTotal - analysis queued")
         # Submitted: retire the button and note the pending analysis on the payload's grid.

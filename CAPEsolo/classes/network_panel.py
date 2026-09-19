@@ -7,9 +7,10 @@ from CAPEsolo.capelib.network import FormatTime, NetworkData
 from CAPEsolo.capelib.network_decrypt import DecryptStreams, StreamRows
 from CAPEsolo.capelib.path_utils import path_exists
 
+from . import ui_kit as ui
 from .custom_grid import CopyableGrid
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, GRID_ROW_ALT, apply_theme
+from .theme import FONT_CODE, GRID_ROW_ALT, SP_LG, SP_SM, SP_XS, apply_theme, dip
 
 ALL_KINDS = "<All traffic>"
 
@@ -52,31 +53,34 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
         hboxFile.Add(
             wx.StaticText(self, label="Capture:"),
             flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL,
-            border=5,
+            border=dip(self, SP_XS),
         )
-        self.pcapPath = wx.TextCtrl(self)
+        self.pcapField = ui.Field(self)
+        self.pcapPath = self.pcapField.ctrl
         self.pcapPath.SetValue("<pcapng captured outside the guest>")
         self.pcapPath.Bind(wx.EVT_TEXT, self.OnPathChanged)
-        browseBtn = wx.Button(self, label="Browse...")
+        browseBtn = ui.Button(self, label="Browse...", glyph=ui.FOLDER)
         browseBtn.Bind(wx.EVT_BUTTON, self.OnBrowse)
-        hboxFile.Add(self.pcapPath, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
+        hboxFile.Add(self.pcapField, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=dip(self, SP_XS))
         hboxFile.Add(browseBtn, proportion=0)
-        vbox.Add(hboxFile, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        vbox.Add(hboxFile, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_SM))
 
         hboxTop = wx.BoxSizer(wx.HORIZONTAL)
-        self.processButton = wx.Button(self, label="Process Capture")
+        self.processButton = ui.Button(
+            self, label="Process Capture", variant=ui.PRIMARY, glyph=ui.REFRESH
+        )
         self.processButton.Bind(wx.EVT_BUTTON, self.ProcessCapture)
         self.processButton.Disable()
-        hboxTop.Add(self.processButton, proportion=0, flag=wx.RIGHT, border=15)
+        hboxTop.Add(self.processButton, proportion=0, flag=wx.RIGHT, border=dip(self, SP_LG))
         hboxTop.Add(
             wx.StaticText(self, label="Show:"),
-            flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL,
-            border=5,
+            flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT,
+            border=dip(self, SP_XS),
         )
-        self.kindDropdown = wx.ComboBox(self, style=wx.CB_READONLY)
+        self.kindDropdown = ui.Picker(self)
         self.kindDropdown.Bind(wx.EVT_COMBOBOX, self.OnKindView)
         hboxTop.Add(self.kindDropdown, proportion=1, flag=wx.EXPAND)
-        vbox.Add(hboxTop, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        vbox.Add(hboxTop, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_SM))
 
         # List and detail live in a splitter so a long capture list cannot squeeze the detail
         # pane out: a grid's best size is all-rows tall, which otherwise wins in a box sizer and
@@ -105,20 +109,27 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
             self.splitter, style=wx.TE_MULTILINE | wx.TE_READONLY
         )
         self.resultsWindow.SetFont(FONT_CODE)
-        self.resultsWindow.SetValue(
-            "Select a pcapng captured outside the guest, then process it.\n\n"
-            "TLS secrets are taken from the analysis: tlsdump/tlsdump.log (capemon in\n"
-            "lsass, for Schannel) and aux_/sslkeylogfile/sslkeys.log. They are merged into\n"
-            "one Wireshark-readable key log, and each TLS session is matched against it."
+        # The detail box is empty until a capture is processed, so the splitter starts on
+        # the state instead and ProcessCapture swaps the box in. A splitter pane is not a
+        # sizer slot, hence the hand-built Notice rather than notice_for().
+        self.notice = ui.Notice(
+            self.splitter,
+            self.resultsWindow,
+            title="No capture processed",
+            detail=(
+                "Select a pcapng captured outside the guest, then process it. TLS secrets "
+                "are taken from the analysis: tlsdump/tlsdump.log (capemon in lsass, for "
+                "Schannel) and aux_/sslkeylogfile/sslkeys.log. They are merged into one "
+                "Wireshark-readable key log, and each TLS session is matched against it."
+            ),
         )
-        # Only the detail pane shows until a capture is processed; the grid is split in on top
-        # in ProcessCapture.
-        self.splitter.Initialize(self.resultsWindow)
+        self.resultsWindow.Hide()
+        self.splitter.Initialize(self.notice)
         vbox.Add(
             self.splitter,
             proportion=1,
             flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            border=5,
+            border=dip(self, SP_XS),
         )
 
         self.SetSizer(vbox)
@@ -165,7 +176,7 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
     def ProcessCapture(self, event):
         pcap = self.GetPcapPath()
         if not pcap or not path_exists(pcap):
-            wx.MessageBox(
+            ui.message(
                 "Choose a capture file first.", "Network", wx.OK | wx.ICON_INFORMATION
             )
             return
@@ -182,7 +193,7 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
                 except Exception as e:
                     self.decrypted = {"error": str(e)}
         except Exception as e:
-            wx.MessageBox(
+            ui.message(
                 f"Failed to process the capture:\n{e}", "Error", wx.OK | wx.ICON_ERROR
             )
             return
@@ -196,6 +207,10 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
         self.LoadKindFilter()
         if not self.splitter.IsSplit():
             self.grid.Show()
+            self.resultsWindow.Show()
+            # The state was holding the unsplit pane; splitting replaces it, so it only
+            # has to stop being a child of the splitter's layout.
+            self.notice.Hide()
             height = self.splitter.GetClientSize().height
             sash = int(height * 0.6) if height > 200 else 300
             self.splitter.SplitHorizontally(self.grid, self.resultsWindow, sash)

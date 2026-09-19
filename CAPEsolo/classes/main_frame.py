@@ -8,6 +8,7 @@ import wx
 from CAPEsolo.capelib.config_paths import config_paths
 from CAPEsolo.capelib.path_utils import path_mkdir
 
+from . import ui_kit as ui
 from .behavior_panel import BehaviorPanel
 from .configs_panel import ConfigsPanel
 from .debugger_panel import DebuggerPanel
@@ -20,7 +21,7 @@ from .start_panel import StartPanel
 from .status_bar import AnalysisStatusBar
 from .strings_panel import StringsPanel
 from .target_info import TargetInfoPanel
-from .theme import BG_MAIN, FONT_UI, ToggleTheme, apply_theme, is_dark
+from .theme import SP_XS, BG_MAIN, ToggleTheme, apply_theme, dip, is_dark
 from .theme import _init as _init_theme
 from .yara_panel import YaraPanel
 
@@ -74,12 +75,12 @@ class MainFrame(wx.Frame):
     def InitUi(self):
         _init_theme()
         self.panel = wx.Panel(self)
-        import wx.lib.agw.flatnotebook as fnb
-        self.notebook = fnb.FlatNotebook(
-            self.panel,
-            wx.ID_ANY,
-            style=fnb.FNB_NO_X_BUTTON | fnb.FNB_NODRAG | fnb.FNB_NO_NAV_BUTTONS | fnb.FNB_TABS_BORDER_SIMPLE
-        )
+        # A plain page-holder plus our own drawn tab strip, rather than FlatNotebook: its
+        # boxed tabs are the most dated element on screen and it exposes only four colours,
+        # none of which reach the tab borders. Simplebook keeps the AddPage/GetPage API and
+        # stays the pages' parent, so the panels that read analysisDir and friends off
+        # GetParent() are unaffected.
+        self.notebook = wx.Simplebook(self.panel)
         self.notebook.analysisDir = self.analysisDir
         self.notebook.results = {}
         self.notebook.yara = ProcessYara(self.analysisDir)
@@ -108,60 +109,73 @@ class MainFrame(wx.Frame):
         self.notebook.AddPage(self.jsConsoleTab, "JS Log")
         self.networkTab = NetworkPanel(self.notebook)
         self.notebook.AddPage(self.networkTab, "Network")
-        self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnNotebookPageChanged)
+        self.notebook.SetSelection(0)
+        # Simplebook is a wxBookCtrl, so it reports page changes as a book event rather
+        # than the notebook-specific one FlatNotebook sent.
+        self.notebook.Bind(wx.EVT_BOOKCTRL_PAGE_CHANGED, self.OnNotebookPageChanged)
 
-        # Layout. Vertical so the status bar can dock beneath the notebook; with a single
-        # proportion-1 EXPAND child this lays out identically to the previous default.
+        self.tabBar = ui.TabBar(self.panel, self.notebook)
+
+        # Layout. Vertical so the tab strip and the status bar can dock above and below the
+        # pages.
         sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.tabBar, 0, wx.EXPAND)
         sizer.Add(self.notebook, 1, wx.EXPAND)
 
         # The status bar paints itself through its own EVT_PAINT and is double buffered, so
         # the theme toggle sits beside it rather than as a child of it.
         bottom = wx.BoxSizer(wx.HORIZONTAL)
         self.statusBar = AnalysisStatusBar(self.panel)
-        self.extendTimeoutBtn = wx.Button(self.panel, label="Extend", style=wx.BU_EXACTFIT)
-        self.extendTimeoutBtn.SetToolTip("Add time to the running analysis timeout.")
+        # Ghost buttons: these sit on the status strip and should read as chrome, not as
+        # actions competing with Launch and Kill on the page above.
+        self.extendTimeoutBtn = ui.Button(
+            self.panel,
+            label="Extend",
+            variant=ui.GHOST,
+            tooltip="Add time to the running analysis timeout.",
+        )
         self.extendTimeoutBtn.Disable()
         self.extendTimeoutBtn.Bind(wx.EVT_BUTTON, self.startTab.OnExtendTimeout)
-        self.settingsButton = wx.Button(self.panel, label="Settings", style=wx.BU_EXACTFIT)
-        self.settingsButton.SetToolTip("Edit CAPEsolo settings (cfg.ini)")
+        self.settingsButton = ui.Button(
+            self.panel,
+            label="Settings",
+            variant=ui.GHOST,
+            glyph=ui.SETTINGS,
+            tooltip="Edit CAPEsolo settings (cfg.ini)",
+        )
         self.settingsButton.Bind(wx.EVT_BUTTON, self.OnSettings)
-        self.themeButton = wx.Button(self.panel, label=self.ThemeLabel(), style=wx.BU_EXACTFIT)
-        self.themeButton.SetToolTip("Switch between the light and dark palettes")
+        self.themeButton = ui.Button(
+            self.panel,
+            label=self.ThemeLabel(),
+            variant=ui.GHOST,
+            tooltip="Switch between the light and dark palettes",
+        )
         self.themeButton.Bind(wx.EVT_BUTTON, self.OnToggleTheme)
+        gap = dip(self.panel, SP_XS)
         bottom.Add(self.statusBar, 1, wx.EXPAND)
-        bottom.Add(self.extendTimeoutBtn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        bottom.Add(self.settingsButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        bottom.Add(self.themeButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
+        bottom.Add(self.extendTimeoutBtn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, gap)
+        bottom.Add(self.settingsButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, gap)
+        bottom.Add(self.themeButton, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, gap)
         sizer.Add(bottom, 0, wx.EXPAND)
 
         self.panel.SetSizer(sizer)
+        # SetSizer() does not apply the layout itself. Without this, self.panel keeps
+        # whatever size it had before the sizer was attached - typically the tiny
+        # placeholder size children get before their first paint - and every child
+        # (tabBar, notebook, statusBar) stays collapsed to its unlaid-out minimum until
+        # something later resizes the frame to a genuinely different size. cli.py's
+        # startup width correction reads startTab.GetClientSize() right after Show(),
+        # which depends on this having already run.
+        self.panel.Layout()
         self.SetBackgroundColour(BG_MAIN)
         self.panel.SetBackgroundColour(BG_MAIN)
         apply_theme(self)
-        self.StyleThemeButton()
+        # apply_theme paints every wx.Panel in card colours; the frame's root panel is the
+        # page background behind the tab strip, not a card.
+        self.panel.SetBackgroundColour(BG_MAIN)
 
     def ThemeLabel(self):
         return "Theme: Dark" if is_dark() else "Theme: Light"
-
-    def StyleThemeButton(self):
-        """Shrink the toggle a point below the rest of the UI.
-
-        Built from FONT_UI's properties rather than by mutating the font the button reports:
-        that object is the shared FONT_UI token, so changing it in place would shrink every
-        control in the app. Has to run after each apply_theme, which resets buttons to FONT_UI.
-        """
-        self.themeButton.SetFont(
-            wx.Font(
-                max(6, FONT_UI.GetPointSize() - 1),
-                FONT_UI.GetFamily(),
-                FONT_UI.GetStyle(),
-                FONT_UI.GetWeight(),
-                faceName=FONT_UI.GetFaceName(),
-            )
-        )
-        self.themeButton.SetMinSize(wx.DefaultSize)
-        self.themeButton.Fit()
 
     def OnToggleTheme(self, event):
         self.RefreshTheme()
@@ -177,6 +191,11 @@ class MainFrame(wx.Frame):
         """Switch palette and restyle everything already on screen."""
         ToggleTheme()
         apply_theme(self)
+        # apply_theme walks wx.Panels as cards; this one is the page background. It runs
+        # after the walk already refreshed self.panel with the (wrong, card) colour, so it
+        # needs its own repaint to actually show BG_MAIN.
+        self.panel.SetBackgroundColour(BG_MAIN)
+        self.panel.Refresh()
 
         # apply_theme re-sets widget colours and the grids' defaults, but not a GridCellAttr
         # already attached to a row: SetBackgroundColour copied the colour in when the attr
@@ -193,9 +212,8 @@ class MainFrame(wx.Frame):
                 shade()
 
         self.themeButton.SetLabel(self.ThemeLabel())
-        self.StyleThemeButton()
-        # Reads TIMER_WARN at paint time, so a repaint is all it needs.
-        self.statusBar.Refresh()
+        # apply_theme() now refreshes every widget it visits (tabBar and statusBar
+        # included) on its way down, so no per-widget repaint is needed here.
         self.Layout()
         self.Refresh()
 

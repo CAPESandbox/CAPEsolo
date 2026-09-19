@@ -14,7 +14,8 @@ import wx.lib.scrolledpanel as scrolled
 
 from CAPEsolo.capelib.config_paths import config_paths, user_config_path
 
-from .theme import FONT_CODE, apply_theme, is_dark
+from . import ui_kit as ui
+from .theme import BG_MAIN, FONT_CODE, SP_SM, SP_XS, apply_theme, dip, is_dark
 
 # Each row: (section, key, label, kind, choices, default).
 # kind: bool | choice | dir | text | int | float. Encrypted key blobs are opaque text: the
@@ -57,9 +58,11 @@ SETTINGS_SCHEMA = [
 _TRUE = ("1", "true", "yes", "on")
 
 
-class SettingsDialog(wx.Dialog):
+class SettingsDialog(ui.Dialog):
     def __init__(self, parent):
-        super().__init__(parent, title="Settings", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(
+            parent, "Settings", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
+        )
         self.parent = parent
         self._widgets = {}  # (section, key) -> (widget, kind)
 
@@ -67,40 +70,48 @@ class SettingsDialog(wx.Dialog):
 
         outer = wx.BoxSizer(wx.VERTICAL)
         panel = scrolled.ScrolledPanel(self, style=wx.TAB_TRAVERSAL)
+        panel.SetBackgroundColour(BG_MAIN)
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         for groupLabel, items in SETTINGS_SCHEMA:
-            box = wx.StaticBoxSizer(wx.VERTICAL, panel, groupLabel)
-            boxParent = box.GetStaticBox()
+            card = ui.Card(panel, title=groupLabel)
             grid = wx.FlexGridSizer(rows=0, cols=2, hgap=8, vgap=8)
             grid.AddGrowableCol(1, 1)
             for section, key, label, kind, choices, default in items:
                 current = config.get(section, key, fallback=default)
-                grid.Add(wx.StaticText(boxParent, label=f"{label}:"), flag=wx.ALIGN_CENTER_VERTICAL)
-                self._add_value_widget(grid, boxParent, section, key, kind, choices, current)
-            box.Add(grid, proportion=1, flag=wx.EXPAND | wx.ALL, border=6)
+                grid.Add(
+                    wx.StaticText(card, label=f"{label}:"), flag=wx.ALIGN_CENTER_VERTICAL
+                )
+                self._add_value_widget(grid, card, section, key, kind, choices, current)
+            card.body.Add(grid, proportion=1, flag=wx.EXPAND)
             if groupLabel == "MCP server":
-                helpBtn = wx.Button(boxParent, label="Command line...")
+                helpBtn = ui.Button(card, label="Command line...")
                 helpBtn.Bind(wx.EVT_BUTTON, self.OnMcpHelp)
-                box.Add(helpBtn, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=6)
-            vbox.Add(box, flag=wx.EXPAND | wx.ALL, border=8)
+                card.body.Add(helpBtn, flag=wx.TOP, border=dip(self, SP_XS))
+            vbox.Add(card, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_SM))
 
         panel.SetSizer(vbox)
         panel.SetupScrolling(scroll_x=False, scroll_y=True)
-        outer.Add(panel, proportion=1, flag=wx.EXPAND | wx.ALL, border=6)
+        outer.Add(panel, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
 
         btnRow = wx.BoxSizer(wx.HORIZONTAL)
-        saveBtn = wx.Button(self, wx.ID_OK, "Save")
-        saveBtn.SetDefault()
+        saveBtn = ui.Button(self, wx.ID_OK, "Save", variant=ui.PRIMARY)
         btnRow.AddStretchSpacer(1)
-        btnRow.Add(saveBtn, flag=wx.RIGHT, border=8)
-        btnRow.Add(wx.Button(self, wx.ID_CANCEL, "Cancel"))
-        outer.Add(btnRow, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        btnRow.Add(saveBtn, flag=wx.RIGHT, border=dip(self, SP_SM))
+        btnRow.Add(ui.Button(self, wx.ID_CANCEL, "Cancel"))
+        outer.Add(btnRow, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_SM))
 
         self.SetSizer(outer)
         apply_theme(self)
+        # apply_theme paints every wx.Panel BG_CARD, which would make the scroll area the
+        # same colour as the cards sitting on it.
+        panel.SetBackgroundColour(BG_MAIN)
         self.SetSize(wx.Size(560, 660))
         self.Bind(wx.EVT_BUTTON, self.OnSave, id=wx.ID_OK)
+        self.Bind(wx.EVT_BUTTON, self.OnCancel, id=wx.ID_CANCEL)
+
+    def OnCancel(self, event):
+        self.EndModal(wx.ID_CANCEL)
 
     def _read_effective(self):
         config = configparser.ConfigParser()
@@ -110,13 +121,13 @@ class SettingsDialog(wx.Dialog):
 
     def _add_value_widget(self, grid, parent, section, key, kind, choices, current):
         if kind == "bool":
-            w = wx.CheckBox(parent)
+            w = ui.Check(parent)
             w.SetValue(str(current).strip().lower() in _TRUE)
             grid.Add(w, flag=wx.ALIGN_CENTER_VERTICAL)
             self._widgets[(section, key)] = (w, kind)
             return
         if kind == "choice":
-            w = wx.Choice(parent, choices=choices)
+            w = ui.Picker(parent, choices=choices)
             cur = str(current).strip().lower()
             w.SetSelection(choices.index(cur) if cur in choices else 0)
             grid.Add(w, flag=wx.EXPAND)
@@ -124,18 +135,20 @@ class SettingsDialog(wx.Dialog):
             return
         if kind == "dir":
             cell = wx.BoxSizer(wx.HORIZONTAL)
-            tc = wx.TextCtrl(parent, value=str(current))
-            browse = wx.Button(parent, label="Browse...")
+            field = ui.Field(parent, value=str(current))
+            tc = field.ctrl
+            browse = ui.Button(parent, label="Browse...", glyph=ui.FOLDER)
             browse.Bind(wx.EVT_BUTTON, lambda e, ctrl=tc: self._OnBrowseDir(ctrl))
-            cell.Add(tc, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=5)
+            cell.Add(field, proportion=1, flag=wx.EXPAND | wx.RIGHT, border=dip(self, SP_XS))
             cell.Add(browse, proportion=0)
             grid.Add(cell, flag=wx.EXPAND)
+            # The TextCtrl, not the wrapper: OnSave reads GetValue off whatever is stored.
             self._widgets[(section, key)] = (tc, kind)
             return
         # text, int, float
-        w = wx.TextCtrl(parent, value=str(current))
-        grid.Add(w, flag=wx.EXPAND)
-        self._widgets[(section, key)] = (w, kind)
+        field = ui.Field(parent, value=str(current))
+        grid.Add(field, flag=wx.EXPAND)
+        self._widgets[(section, key)] = (field.ctrl, kind)
 
     def _OnBrowseDir(self, ctrl):
         current = ctrl.GetValue().strip()
@@ -183,12 +196,19 @@ class SettingsDialog(wx.Dialog):
             "github.com/CAPESandbox/CAPEsolo - mcp_server.md"
         )
 
-        dlg = wx.Dialog(self, title="Starting the MCP server", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        dlg = ui.Dialog(
+            self,
+            "Starting the MCP server",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        dlg.SetEscapeId(wx.ID_OK)
         sizer = wx.BoxSizer(wx.VERTICAL)
         ctrl = wx.TextCtrl(dlg, value=text, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
         ctrl.SetFont(FONT_CODE)
-        sizer.Add(ctrl, proportion=1, flag=wx.EXPAND | wx.ALL, border=8)
-        sizer.Add(wx.Button(dlg, wx.ID_OK, "Close"), flag=wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, border=10)
+        sizer.Add(ctrl, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_SM))
+        close = ui.Button(dlg, wx.ID_OK, "Close", variant=ui.PRIMARY)
+        close.Bind(wx.EVT_BUTTON, lambda event: dlg.EndModal(wx.ID_OK))
+        sizer.Add(close, flag=wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_SM))
         dlg.SetSizer(sizer)
         apply_theme(dlg)
         dlg.SetSize(wx.Size(700, 520))
@@ -228,7 +248,7 @@ class SettingsDialog(wx.Dialog):
             with open(path, "w") as fh:
                 config.write(fh)
         except OSError as e:
-            wx.MessageBox(f"Could not save settings to {path}:\n{e}", "Error", wx.OK | wx.ICON_ERROR)
+            ui.message(f"Could not save settings to {path}:\n{e}", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         # Theme applies live; RefreshTheme toggles, so only call it when the value flipped.
@@ -237,7 +257,7 @@ class SettingsDialog(wx.Dialog):
         if newTheme != currentMode and hasattr(self.parent, "RefreshTheme"):
             self.parent.RefreshTheme()
 
-        wx.MessageBox(
+        ui.message(
             f"Settings saved to:\n{path}\n\nThe theme applies now. Analysis directory, result "
             "server and download enable take effect after restarting CAPEsolo.\n\nMCP settings "
             "apply to the separate CAPEsolo-mcp process, which CAPEsolo does not start - "
@@ -248,7 +268,7 @@ class SettingsDialog(wx.Dialog):
         self.EndModal(wx.ID_OK)
 
     def _invalid(self, label, what):
-        wx.MessageBox(f"{label} must be {what}.", "Invalid setting", wx.OK | wx.ICON_ERROR)
+        ui.message(f"{label} must be {what}.", "Invalid setting", wx.OK | wx.ICON_ERROR)
 
     @staticmethod
     def _is_int(value):

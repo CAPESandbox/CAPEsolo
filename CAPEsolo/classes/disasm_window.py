@@ -5,8 +5,9 @@ import wx.lib.scrolledpanel as scrolled
 # whole instead of being cut mid-encoding.
 from CAPEsolo.capelib.debug_session import MAX_INSTRUCTION_LEN, Disassemble
 
+from . import ui_kit as ui
 from .key_event import KeyEventHandlerMixin
-from .theme import FONT_CODE, apply_theme
+from .theme import FONT_CODE, SP_XS, apply_theme, dip
 
 # Page sizes in KB. Disassembly text runs several times the size of the bytes it
 # describes, so these are smaller than the hex view's.
@@ -138,58 +139,57 @@ class DisasmWindow(wx.Frame, KeyEventHandlerMixin):
 
         self.paginationSizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.firstPageButton = wx.Button(self.panel, label="<<")
+        self.firstPageButton = ui.Button(self.panel, label="<<")
         self.firstPageButton.Bind(wx.EVT_BUTTON, self.OnFirstPage)
-        self.paginationSizer.Add(self.firstPageButton, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.firstPageButton, 0, wx.ALL, dip(self, SP_XS))
 
-        self.prevButton = wx.Button(self.panel, label="Previous")
+        self.prevButton = ui.Button(self.panel, label="Previous")
         self.prevButton.Bind(wx.EVT_BUTTON, self.OnPrevPage)
-        self.paginationSizer.Add(self.prevButton, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.prevButton, 0, wx.ALL, dip(self, SP_XS))
 
         self.pageLabel = wx.StaticText(self.panel, label="Page 1 of 1")
         self.paginationSizer.Add(self.pageLabel, 0, wx.ALL | wx.CENTER, 5)
 
-        self.pageInput = wx.TextCtrl(
+        self.pageField = ui.Field(
             self.panel, value="1", size=wx.Size(60, -1), style=wx.TE_PROCESS_ENTER
         )
+        self.pageInput = self.pageField.ctrl
         self.pageInput.Bind(wx.EVT_TEXT_ENTER, self.OnGoToPage)
-        self.paginationSizer.Add(self.pageInput, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.pageField, 0, wx.ALL, dip(self, SP_XS))
 
-        self.goButton = wx.Button(self.panel, label="Go")
+        self.goButton = ui.Button(self.panel, label="Go")
         self.goButton.Bind(wx.EVT_BUTTON, self.OnGoToPage)
-        self.paginationSizer.Add(self.goButton, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.goButton, 0, wx.ALL, dip(self, SP_XS))
 
-        self.nextButton = wx.Button(self.panel, label="Next")
+        self.nextButton = ui.Button(self.panel, label="Next")
         self.nextButton.Bind(wx.EVT_BUTTON, self.OnNextPage)
-        self.paginationSizer.Add(self.nextButton, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.nextButton, 0, wx.ALL, dip(self, SP_XS))
 
-        self.lastPageButton = wx.Button(self.panel, label=">>")
+        self.lastPageButton = ui.Button(self.panel, label=">>")
         self.lastPageButton.Bind(wx.EVT_BUTTON, self.OnLastPage)
-        self.paginationSizer.Add(self.lastPageButton, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.lastPageButton, 0, wx.ALL, dip(self, SP_XS))
 
         self.paginationSizer.Add(
             wx.StaticText(self.panel, label="KB per page:"), 0, wx.ALL | wx.CENTER, 5
         )
-        self.pageSizeDropdown = wx.ComboBox(
+        self.pageSizeDropdown = ui.Picker(
             self.panel,
             value=str(DEFAULT_PAGE_SIZE),
             choices=[str(c) for c in PAGE_SIZE_CHOICES],
-            style=wx.CB_READONLY,
         )
         self.pageSizeDropdown.Bind(wx.EVT_COMBOBOX, self.OnPageSizeChange)
-        self.paginationSizer.Add(self.pageSizeDropdown, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.pageSizeDropdown, 0, wx.ALL, dip(self, SP_XS))
 
         self.paginationSizer.Add(
             wx.StaticText(self.panel, label="Arch:"), 0, wx.ALL | wx.CENTER, 5
         )
-        self.archDropdown = wx.ComboBox(
+        self.archDropdown = ui.Picker(
             self.panel,
             value="x64" if self.bits == 64 else "x86",
             choices=ARCH_CHOICES,
-            style=wx.CB_READONLY,
         )
         self.archDropdown.Bind(wx.EVT_COMBOBOX, self.OnArchChange)
-        self.paginationSizer.Add(self.archDropdown, 0, wx.ALL, 5)
+        self.paginationSizer.Add(self.archDropdown, 0, wx.ALL, dip(self, SP_XS))
 
         self.vbox.Add(self.paginationSizer, 0, wx.CENTER | wx.BOTTOM, 5)
 
@@ -240,7 +240,7 @@ class DisasmWindow(wx.Frame, KeyEventHandlerMixin):
         try:
             pageNum = int(self.pageInput.GetValue())
         except ValueError:
-            wx.MessageBox(
+            ui.message(
                 "Please enter a valid integer page number.",
                 "Invalid Input",
                 wx.OK | wx.ICON_ERROR,
@@ -252,7 +252,7 @@ class DisasmWindow(wx.Frame, KeyEventHandlerMixin):
             self.currentPage = pageNum
             self.LoadPage()
         else:
-            wx.MessageBox(
+            ui.message(
                 f"Page number must be between 1 and {totalPages}.",
                 "Invalid Page Number",
                 wx.OK | wx.ICON_ERROR,
