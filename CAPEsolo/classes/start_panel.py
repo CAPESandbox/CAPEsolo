@@ -263,7 +263,14 @@ class _DownloadCredentialsDialog(ui.Dialog):
 
 class StartPanel(wx.Panel):
     def __init__(self, parent):
-        super().__init__(parent)
+        # FULL_REPAINT_ON_RESIZE, as a constructor style (wxMSW picks the registered window
+        # class at creation, so SetWindowStyleFlag afterwards is silently ignored).
+        # Candidate fix, cause not established: several action-bar buttons come out doubled a
+        # few pixels apart after a drag-resize and stay that way until a tab switch repaints
+        # the page. Putting it on the container rather than the controls was tried because the
+        # same flag on the drawn controls themselves (ui_kit._Themed, Card, SectionHeader,
+        # Field) made the artifacting worse, not better.
+        super().__init__(parent, style=wx.FULL_REPAINT_ON_RESIZE)
         self.parent = parent
         self.curDir = True
         self.manualExecution = False

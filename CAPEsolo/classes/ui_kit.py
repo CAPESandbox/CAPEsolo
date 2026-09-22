@@ -1826,6 +1826,18 @@ class TabBar(_Themed):
                     )
 
 
+def _refresh_tree(window):
+    """Invalidate *window* and every descendant.
+
+    Refresh() is a plain InvalidateRect on a single HWND on MSW, and every ui_kit control is
+    its own window, so one call on a container never reaches the controls inside it - the
+    same reason apply_theme refreshes on the way down rather than once at the top.
+    """
+    window.Refresh()
+    for child in window.GetChildren():
+        _refresh_tree(child)
+
+
 class Dialog(wx.Dialog):
     """wx.Dialog with the palette applied and Escape wired up.
 
@@ -1841,6 +1853,27 @@ class Dialog(wx.Dialog):
         self.SetForegroundColour(FG_PRIMARY)
         lock_font(self, FONT_UI)
         self.Bind(wx.EVT_CHAR_HOOK, self._OnCharHook)
+
+    def ShowModal(self):
+        """Repaint what was behind the dialog once it closes.
+
+        A modal disables every other window in the app, and IsEnabled() is false while any
+        ancestor is disabled - so an owner-drawn control on the frame behind this dialog
+        paints itself in its disabled colours (FG_DISABLED for a label, BG_DISABLED for a
+        body). Dismissing the dialog re-enables those windows but does not invalidate them,
+        so they keep the dim pixels until something else happens to repaint them: hovering
+        one, switching tabs, expanding a pane.
+
+        Worst at startup, where the Start panel takes its very first paint while the
+        credentials dialog is already up (start_panel.py defers _InitDownloadBroker to
+        CallAfter precisely so the frame is realized first), leaving every drawn label on
+        that page looking like a disabled hint.
+        """
+        result = super().ShowModal()
+        parent = self.GetParent()
+        if parent:
+            _refresh_tree(wx.GetTopLevelParent(parent))
+        return result
 
     def SetEscapeId(self, id):
         self.escapeId = id
