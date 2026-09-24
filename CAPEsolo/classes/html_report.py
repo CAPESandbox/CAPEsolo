@@ -87,6 +87,18 @@ class ReportHTML:
         try:
             with codecs.open(filepath, "w", encoding="utf-8", errors="replace") as report:
                 report.write(html)
-                return True, None
         except OSError as e:
             return False, e
+
+        # Second copy inside the analysis directory, so Zip Results archives the report along
+        # with the artifacts it describes. Best-effort: the Desktop copy above is the one the
+        # caller was promised.
+        try:
+            with codecs.open(
+                str(Path(analysisDir) / "report.html"), "w", encoding="utf-8", errors="replace"
+            ) as report:
+                report.write(html)
+        except OSError:
+            pass
+
+        return True, None

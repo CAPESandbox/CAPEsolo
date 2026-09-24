@@ -31,6 +31,8 @@ class PayloadsPanel(wx.Panel):
         super().__init__(parent)
         self.parent = parent
         self.analysisDir = parent.analysisDir
+        # Shared with every other tab; the Signatures tab reads what this one publishes.
+        self.results = parent.results
         self.payloadsLoaded = False
         self.jsonFileExists = False
         self.button_to_path = {}
@@ -85,6 +87,10 @@ class PayloadsPanel(wx.Panel):
 
         path = Path(self.analysisDir) / key
         fileinfo = File(str(path)).get_all()[0]
+        # Publish the same shape json_report.Payloads builds, from the work already done
+        # here: the Signatures tab cannot run until payloads and configs exist, and this is
+        # the tab that owns them.
+        self.PublishPayload(path, entry, cape_info, fileinfo)
         filepath = key[0].upper() + key[1:]
 
         grid = CopyableGrid(self.panel, 0, 2)
@@ -243,9 +249,23 @@ class PayloadsPanel(wx.Panel):
             with wx.BusyCursor():
                 self.LoadAndDisplayContent()
 
+    def PublishPayload(self, path, entry, cape_info, fileinfo):
+        """Record one payload in the shared results dict, report-shaped."""
+        payload = dict(cape_info)
+        for name, value in fileinfo.items():
+            if name != "path" and value:
+                payload[name] = value
+        for flag in ("incomplete", "truncated"):
+            if entry.get(flag):
+                payload[flag] = True
+        self.results.setdefault("payloads", []).append({str(path): payload})
+
     def LoadAndDisplayContent(self):
         if self.payloadsLoaded or not self.jsonFileExists:
             return
+
+        # Rebuilt from scratch on a (re)load so a second pass cannot double the list.
+        self.results["payloads"] = []
 
         data = LoadFilesJson(self.analysisDir)
         if "error" in data:

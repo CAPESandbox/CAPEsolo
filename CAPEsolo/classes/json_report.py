@@ -5,6 +5,11 @@ from pathlib import Path
 
 from CAPEsolo.capelib.behavior import BehaviorAnalysis
 from CAPEsolo.capelib.cape_utils import get_cape_name_from_yara_hit, metadata_processing
+from CAPEsolo.capelib.capture_report import (
+    BuildCaptureReport,
+    CaptureWarnings,
+    LoadCaptureReport,
+)
 from CAPEsolo.capelib.js_log import JsLog
 from CAPEsolo.capelib.network import NetworkData
 from CAPEsolo.capelib.network_decrypt import DecryptStreams
@@ -57,9 +62,65 @@ def BehaviorResults(analysisDir):
     return results
 
 
+# Everything a signature may read must already be in results before the pass runs. CAPEv2
+# gets this for free - CAPE extraction is a processing module and signatures run after all of
+# them - but CAPEsolo assembles the report inline, so the order is only a convention unless it
+# is enforced. Two shipped signatures read the payload/config data and silently matched nothing
+# because the pass ran before either existed.
+SIGNATURE_PREREQS = ("target", "behavior", "js_log", "network", "payloads", "configs", "CAPE")
+
+
 def Signatures(results, analysisDir):
+    missing = [key for key in SIGNATURE_PREREQS if key not in results]
+    if missing:
+        raise RuntimeError(
+            "Signatures ran before their inputs existed - missing "
+            f"{', '.join(missing)}. Build the full results dict first; a signature that reads "
+            "a key added later matches nothing and reports no error."
+        )
+
     RunSignatures(results=results, analysis_path=analysisDir).run()
     return results.get("signatures")
+
+
+def CapeView(results):
+    """The payload/config view the shipped CAPE signatures read, in CAPEsolo's own terms.
+
+    CAPEv2 publishes results["CAPE"] = {"payloads": [...], "configs": [...]} from its CAPE
+    processing module, and its payload entries are flat dicts with "path" as a field and yara
+    hits under "cape_yara". CAPEsolo keys payloads by path instead and calls the hits "yara",
+    so this re-keys the same objects rather than rebuilding them.
+
+    Deliberately not a full CAPEv2 mirror: upstream splits results by target type (file, url,
+    static, procmemory), and CAPEsolo only ever analyses a file. Only the two fields the
+    signatures actually read are aliased; no upstream field CAPEsolo does not produce is
+    invented.
+    """
+    # The Yara tab publishes hits as their own section rather than attaching them to each
+    # payload, so a payload assembled in the GUI has no "yara" key. Index the section by the
+    # trailing "CAPE/<name>" of each path - the same join json_report uses to match a payload
+    # to its scan - so a signature sees the hits either way round.
+    hitsByFile = {}
+    for hit in results.get("yara") or []:
+        key = "/".join(Path(str(hit.get("file", ""))).parts[-2:])
+        # The section calls the rule "rule"; a payload's own hits call it "name", which is
+        # what the signatures read.
+        hitsByFile.setdefault(key, []).append(dict(hit, name=hit.get("rule", "")))
+
+    payloads = []
+    for entry in results.get("payloads") or []:
+        for path, data in (entry.items() if isinstance(entry, dict) else []):
+            payload = dict(data or {})
+            payload["path"] = str(path)
+            if payload.get("yara"):
+                payload["cape_yara"] = payload["yara"]
+            else:
+                fromSection = hitsByFile.get("/".join(Path(str(path)).parts[-2:]))
+                if fromSection:
+                    payload["cape_yara"] = fromSection
+            payloads.append(payload)
+
+    return {"payloads": payloads, "configs": results.get("configs") or []}
 
 
 def Payloads(analysisDir):
@@ -80,6 +141,12 @@ def Payloads(analysisDir):
         metadata = data[key].get("metadata", "")
         if metadata:
             payloadData = metadata_processing(metadata, data[key].get("pids"))
+
+        # Carried from files.json: the artifact is on disk but was not stored whole, so a
+        # consumer does not analyse a partial payload believing it is the complete one.
+        for flag in ("incomplete", "truncated"):
+            if value.get(flag):
+                payloadData[flag] = True
 
         for key, value in fileinfo.items():
             if key not in "path" and value:
@@ -140,12 +207,26 @@ def Configs(yara, analysisDir):
     return configs, detections
 
 
-def WriteJsonFile(results):
+def WriteJsonFile(results, analysisDir=""):
+    """Write report.json to the Desktop, and into the analysis directory when known.
+
+    The Desktop copy is where CAPEsolo has always put it. The analysis-directory copy is what
+    makes a results bundle self-contained: Zip Results archives that directory, so without it
+    the archive carried every artifact except the report.
+    """
     try:
         desktop = Path(os.path.expanduser("~/Desktop"))
         filepath = desktop / "report.json"
         with open(filepath, "w", encoding="utf-8", errors="replace") as f:
             dump(results, f, indent=4)
+
+        if analysisDir:
+            # Best-effort: a failure here must not lose the Desktop copy the caller expects.
+            try:
+                with open(Path(analysisDir) / "report.json", "w", encoding="utf-8", errors="replace") as f:
+                    dump(results, f, indent=4)
+            except Exception as e:
+                log.warning("Could not write report.json into the analysis directory: %s", e)
 
         return True, ""
     except Exception as e:
@@ -159,6 +240,47 @@ def GetYara(yara, path):
             return data
 
     return None
+
+
+def YaraHits(yara):
+    """Flatten every scan into one file-by-file hit list, the way the Yara tab shows them.
+
+    Attaching hits to target/payload entries alone loses two things: the CAPE name a rule
+    carries (which is what drives config extraction), and any hit on a file that has no
+    payload entry to hang off - notably the blobs a config parser dumps, which are scanned
+    after the payload list was built.
+
+    Mirrors YaraPanel.AddHits so both views describe a hit the same way. Deduplicated on
+    (file, rule): a parser-dump round re-scans files already in yara_results.
+    """
+    hits = []
+    seen = set()
+    for filehits in yara.yara_results:
+        for file, matches in filehits.items():
+            for hit in matches or []:
+                rule = hit.get("name", "")
+                key = (str(file), rule)
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                meta = hit.get("meta") or {}
+                # get_cape_name_from_yara_hit indexes hit["meta"] directly; this list is
+                # built from every scan result, so do not assume the key is there.
+                capename = get_cape_name_from_yara_hit(hit) if "meta" in hit else ""
+                hits.append(
+                    {
+                        "file": str(file),
+                        "rule": rule,
+                        "capename": capename or "",
+                        "meta": meta,
+                        "description": " ".join(str(meta.get("description", "")).split()),
+                        "strings": hit.get("strings") or [],
+                        "addresses": hit.get("addresses") or {},
+                    }
+                )
+
+    return hits
 
 
 def Network(analysisDir, results, pcapPath=""):
@@ -205,8 +327,6 @@ def GetResults(targetFile, analysisDir, writeFile=True, includeStrings=True, pca
     # after they had already run.
     results["js_log"] = JsLog(analysisDir)
     results["network"] = Network(analysisDir, results, pcapPath)
-    results["signatures"] = Signatures(results, analysisDir)
-    results["payloads"] = Payloads(analysisDir)
 
     yara = ProcessYara(analysisDir)
     yara.Scan(str(targetFile))
@@ -219,6 +339,14 @@ def GetResults(targetFile, analysisDir, writeFile=True, includeStrings=True, pca
         extracted = extract_strings(str(targetFile), dedup=True, minchars=4)
         if extracted:
             results["target"]["strings"] = sorted(list(set(extracted)), key=lambda x: (len(x), x))
+
+    # Configs first, then payloads: a parser hands back blobs that are written into CAPE/ and
+    # scanned (Configs -> DumpParserFiles -> ScanPayload). Building the payload list before
+    # that ran left those files out of the report entirely, and their yara hits with them -
+    # there was no payload entry to attach them to. No signature reads results["payloads"],
+    # so nothing upstream depends on the old order.
+    results["configs"], results["detections"] = Configs(yara, analysisDir)
+    results["payloads"] = Payloads(analysisDir)
 
     for payload in results.get("payloads", []):
         for path in payload.keys():
@@ -233,8 +361,29 @@ def GetResults(targetFile, analysisDir, writeFile=True, includeStrings=True, pca
                 if extracted:
                     payload[path]["strings"] = sorted(list(set(extracted)), key=lambda x: (len(x), x))
 
-    results["configs"], results["detections"] = Configs(yara, analysisDir)
+    # Additive top-level section: every hit on every scanned file, including the ones no
+    # payload entry covers. This is what the Yara tab shows and what the report was missing.
+    results["yara"] = YaraHits(yara)
+
+    # Signatures run last, over everything - the order CAPEv2 gets from running its processing
+    # modules before the signature stage. The CAPE view exists only for that pass: CAPEsolo's
+    # own payloads/configs keys are the canonical ones, so it is dropped before serialising
+    # rather than shipping the same payload data twice.
+    results["CAPE"] = CapeView(results)
+    results["signatures"] = Signatures(results, analysisDir)
+    results.pop("CAPE", None)
+    # Additive key: what the run actually captured and what it lost, so a thin report can be
+    # told apart from a quiet analysis - on this machine and after the bundle is copied off it.
+    # Reconciled fresh (artifacts can arrive after the run, e.g. files reconstructed from the
+    # JS streams), but the transfer counters can only come from the manifest written when the
+    # result server shut down - STATS is reset by the next run and gone in a later session.
+    capture = BuildCaptureReport(analysisDir)
+    stored = LoadCaptureReport(analysisDir)
+    if stored.get("transfers") and not capture.get("transfers"):
+        capture["transfers"] = stored["transfers"]
+        capture["warnings"] = CaptureWarnings(capture)
+    results["capture"] = capture
     if writeFile:
-        return WriteJsonFile(results)
+        return WriteJsonFile(results, analysisDir)
     else:
         return results

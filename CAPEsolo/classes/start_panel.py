@@ -16,9 +16,14 @@ import wx.lib.scrolledpanel as scrolled
 from sflock.abstracts import File as SflockFile
 from sflock.ident import identify as sflock_identify
 
+from CAPEsolo.capelib.capture_report import (
+    CAPTURE_FILE,
+    BuildCaptureReport,
+    WriteCaptureReport,
+)
 from CAPEsolo.capelib.js_log import GetJsLogPath
 from CAPEsolo.capelib.path_utils import path_exists
-from CAPEsolo.capelib.resultserver import ResultServer
+from CAPEsolo.capelib.resultserver import STATS, ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
 from CAPEsolo.lib.common.hashing import hash_file
 from CAPEsolo.lib.common.zip_utils import (
@@ -1070,6 +1075,18 @@ class StartPanel(wx.Panel):
         except Exception:
             self.log(traceback.format_exc())
 
+        # Written after the server has drained, so the transfer counters cover late uploads
+        # (STATS is only reset when the next ResultServer starts). This is the one place the
+        # analyst is told the run lost something - until now it was a single line in the log.
+        capture = WriteCaptureReport(self.analysisDir, stats=STATS.snapshot())
+        warnings = capture.get("warnings") or []
+        for warning in warnings:
+            self.log(f"Capture: {warning}")
+        if warnings:
+            self.GetMainFrame().statusBar.SetMessage(
+                f"Analysis complete - {len(warnings)} capture warning(s), see {CAPTURE_FILE}"
+            )
+
         if self.autoProcess.GetValue():
             self.AutoProcessTabs()
         return True
@@ -1838,24 +1855,88 @@ class StartPanel(wx.Panel):
     def OnOpenDirectory(self, event):
         os.startfile(self.analysisDir)
 
+    # Members of a report bundle: everything needed to read the analysis on another machine,
+    # and nothing executable. Payload bytes stay in the VM, so the archive can be copied to a
+    # workstation without its antivirus quarantining the results.
+    REPORT_BUNDLE_MEMBERS = ("report.json", CAPTURE_FILE, "analysis.log", "files.json")
+
     def OnZipResults(self, event):
-        """Zip the analysis directory to the Desktop so it can be restored in a clean VM."""
-        dest = Path(desktop_dir()) / f"capesolo_analysis_{datetime.now():%Y%m%d_%H%M%S}"
+        """Archive the analysis for another machine, or for restoring into a clean VM."""
+        answer = ui.message(
+            "Include the sample and dumped payloads?\n\n"
+            "Yes - full bundle: the whole analysis directory, for restoring into a clean VM. "
+            "It contains live malware.\n\n"
+            "No - report bundle: report.json, the capture manifest, analysis.log and the file "
+            "manifest. Safe to copy to a workstation and open in tools/report_viewer.py.",
+            "Zip Results",
+            wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION,
+        )
+        if answer == wx.CANCEL:
+            return
+
+        full = answer == wx.YES
+        if not (Path(self.analysisDir) / "report.json").is_file():
+            prompt = (
+                "There is no report.json in the analysis directory yet. Generate one now?\n\n"
+                "This runs the same processing as the JSON Report button and can take a while."
+            )
+            if not full:
+                prompt = (
+                    "There is no report.json in the analysis directory yet, and a report bundle "
+                    "is built around it. Generate one now?\n\n"
+                    "This runs the same processing as the JSON Report button and can take a while."
+                )
+            if ui.message(prompt, "Zip Results", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+                self.JsonReport(None, confirm=False)
+            elif not full:
+                return
+
+        prefix = "capesolo_analysis" if full else "capesolo_report"
+        dest = Path(desktop_dir()) / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
         self.zipResultsBtn.Disable()
         self.GetMainFrame().statusBar.SetMessage("Zipping analysis results...")
         # Background thread: the analysis dir (logs/, files/, memory/, CAPE/, ...) can be large.
-        Thread(target=self._ZipResultsThread, args=(dest,), daemon=True).start()
+        Thread(target=self._ZipResultsThread, args=(dest, full), daemon=True).start()
 
-    def _ZipResultsThread(self, dest):
+    def _ZipResultsThread(self, dest, full):
         try:
-            # dest has no extension; make_archive appends .zip. The Desktop target is outside
-            # analysisDir, so the growing archive is not swept into itself.
-            shutil.make_archive(str(dest), "zip", root_dir=self.analysisDir)
-            wx.CallAfter(self._OnZipResultsDone, dest.with_suffix(".zip"), None)
+            # Refreshed here so the archive describes what is on disk right now, not what was
+            # true when the analysis ended.
+            WriteCaptureReport(self.analysisDir)
+            if full:
+                # dest has no extension; make_archive appends .zip. The Desktop target is outside
+                # analysisDir, so the growing archive is not swept into itself.
+                shutil.make_archive(str(dest), "zip", root_dir=self.analysisDir)
+            else:
+                self._WriteReportBundle(dest.with_suffix(".zip"))
+            wx.CallAfter(self._OnZipResultsDone, dest.with_suffix(".zip"), None, full)
         except Exception as e:
-            wx.CallAfter(self._OnZipResultsDone, None, str(e))
+            wx.CallAfter(self._OnZipResultsDone, None, str(e), full)
 
-    def _OnZipResultsDone(self, path, error):
+    def _WriteReportBundle(self, path):
+        """Write the payload-free bundle: the four members, nothing else."""
+        import zipfile
+
+        analysisDir = Path(self.analysisDir)
+        with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in self.REPORT_BUNDLE_MEMBERS:
+                source = analysisDir / name
+                if not source.is_file():
+                    continue
+                if name == CAPTURE_FILE:
+                    # Stamped as a report bundle so the viewer can say payload bytes were left
+                    # behind deliberately, and so _restore_results refuses to unpack it into an
+                    # analysis directory it would only half fill.
+                    archive.writestr(
+                        name,
+                        json.dumps(
+                            BuildCaptureReport(self.analysisDir, bundle="report"), indent=4
+                        ),
+                    )
+                else:
+                    archive.write(str(source), name)
+
+    def _OnZipResultsDone(self, path, error, full=True):
         statusBar = self.GetMainFrame().statusBar
         self.zipResultsBtn.Enable()
         if error is not None:
@@ -1863,9 +1944,20 @@ class StartPanel(wx.Panel):
             ui.message(f"Failed to zip results:\n{error}", "Error", wx.OK | wx.ICON_ERROR)
             return
         statusBar.SetMessage(f"Zipped results to {path.name}")
+        if full:
+            detail = (
+                "To restore in a clean VM, copy this file to "
+                "C:\\Users\\Public\\CAPEsolo\\restore.zip and start CAPEsolo.\n\n"
+                "It contains the sample and the dumped payloads - treat it as live malware."
+            )
+        else:
+            detail = (
+                "Copy it to your workstation and open it with tools/report_viewer.py - the "
+                "viewer reads the report straight out of the zip.\n\n"
+                "No sample or payload bytes are included."
+            )
         ui.message(
-            f"Analysis results zipped to:\n{path}\n\nTo restore in a clean VM, copy this file to "
-            "C:\\Users\\Public\\CAPEsolo\\restore.zip and start CAPEsolo.",
+            f"Analysis results zipped to:\n{path}\n\n{detail}",
             "Zip Results",
             wx.OK | wx.ICON_INFORMATION,
         )
@@ -1984,14 +2076,14 @@ class StartPanel(wx.Panel):
 
         self.yaraRule.SetValue(yaraText)
 
-    def JsonReport(self, event):
-        confirm = ui.message(
+    def JsonReport(self, event, confirm=True):
+        # confirm=False is for callers that have already asked - Zip Results offers to build a
+        # missing report before archiving, and a second identical prompt is just noise.
+        if confirm and ui.message(
             "Generate JSON report.\n\nDo you want to continue?",
             "Confirm",
             wx.YES_NO | wx.ICON_QUESTION | wx.CENTER,
-        )
-
-        if confirm != wx.YES:
+        ) != wx.YES:
             return
 
         try:

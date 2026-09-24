@@ -32,6 +32,8 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
         self.parent = parent
         self.yara = parent.yara
         self.analysisDir = parent.analysisDir
+        # Shared with every other tab; the Signatures tab reads what this one publishes.
+        self.results = parent.results
         self.yaraComplete = False
         self.filesjson = Path(self.analysisDir) / "files.json"
         # One entry per rule match, flattened out of the per-file yara results so that a
@@ -287,6 +289,10 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
         for filehits in self.yara.yara_results:
             for file, hits in filehits.items():
                 self.AddHits(file, hits)
+
+        # Same records json_report.YaraHits writes into report.json, so a signature sees the
+        # same hits whether it runs here or in the report.
+        self.results["yara"] = self.hits
 
         self.LoadFileFilter()
         # Shown before the rows go in, so the Layout that AddTableData ends with is the one

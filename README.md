@@ -10,6 +10,10 @@ The Interface
   window, so they do not scroll away.
 * Dark and light themes, switched from the status bar at the bottom right or from Settings.
   The choice is written to `cfg.ini` and restored on the next run.
+* Process **Payloads** and **Configs** before **Signatures**. A signature only sees what is in
+  the results when it runs, and several read the payload, config and yara data - running the
+  pass first would quietly under-report rather than fail. The Signatures button stays disabled
+  until those tabs have run and its tooltip says which are outstanding.
 
 ![CAPEsolo, light theme](https://raw.githubusercontent.com/CAPESandbox/CAPEsolo/main/docs/images/frame-light.png)
 
@@ -51,13 +55,17 @@ Revert the VM after each analysis.
 View a JSON Report (standalone)
 * `tools/report_viewer.py` is a self-contained triage viewer for a CAPEsolo `report.json` that
   runs on any host with just Python - no CAPEsolo install and no pip dependencies (stdlib tkinter).
-  * `python tools/report_viewer.py [path\to\report.json]`
+  * `python tools/report_viewer.py [path\to\report.json | path\to\bundle.zip]`
+  * A results bundle from Zip Results opens as-is: the report is read out of the zip in place, so
+    a full bundle's payload bytes are never written to the machine doing the triage.
   * With no argument it opens `%USERPROFILE%\Desktop\report.json` (where CAPEsolo writes it);
-    use File > Open to pick another.
-  * Triage tabs: Overview (verdict card - file hashes, detections, top signatures, config, counts),
+    use File > Open to pick another report or bundle.
+  * Triage tabs: Overview (verdict card - file hashes, detections, top signatures, config, counts,
+    and whether anything was lost in capture), Capture (what the run stored and what it did not),
     Signatures (severity-sorted, colored, with per-process evidence), Processes (the process tree
     with per-process metadata), Network (DNS/HTTP/Hosts/Domains/Flows), Payloads (with yara hits
-    and strings), and IOCs (aggregated, with Copy / Export CSV / Export text).
+    and strings), Yara (every rule hit across every scanned file, with metadata, matched strings
+    and offsets), and IOCs (aggregated, with Copy / Export CSV / Export text).
   * The Search box (top bar) finds a value across signatures, network, payloads, configs, IOCs and
     strings, and jumps to the owning tab.
   * A Raw JSON tab keeps the full tree for anything the triage tabs do not surface.
@@ -65,11 +73,66 @@ View a JSON Report (standalone)
     (children on expand), and the detail panes are bounded, so it stays responsive on
     hundred-MB/GB reports. (A GB report still needs several GB of RAM to parse - inherent to
     Python's JSON.)
+  * Dark and light themes, matching the CAPEsolo GUI's palette. It follows the Windows
+    "app mode" setting by default (dark elsewhere); the button at the top right flips it for the
+    session, and `--theme dark|light` forces one. The menu bar and the native Open/error dialogs
+    are drawn by Windows and stay light - tkinter cannot theme those.
   * Needs tkinter - bundled with the standard Windows/macOS Python; on Linux install `python3-tk`.
 
+AI Analysis (optional)
+* The viewer can run Claude over a loaded report: a specialist per evidence tab, a lead-analyst
+  verdict on Overview, and an interactive question loop. It is **opt-in and optional** - the
+  viewer still has no required dependencies, and every tab above works without any of this.
+* Enable it with one package and a key:
+  * `pip install anthropic`
+  * `set ANTHROPIC_API_KEY=sk-ant-...` (or pass `--api-key`, or enter it in AI > Settings)
+  * Without the package or the key, the AI panes say so and nothing else changes.
+* Three ways to use it:
+  * **GUI** - the **AI** tab has one specialist per evidence tab (Signatures, Processes,
+    Behavior, Network, JS Log, Payloads, Configs, Yara, Static, IOCs, Capture) plus an **Ask** pane.
+    "Analyze all" runs every specialist and then writes a verdict card onto Overview.
+    "Analyze tab" in the top bar runs the specialist for whichever tab you are reading.
+  * **One-shot** - `python report_viewer.py bundle.zip --ask "is this a loader or the final stage?"`
+  * **Interactive** - `python report_viewer.py bundle.zip --chat`, or
+    `--analyze all` / `--analyze Network` to print findings headless.
+* Options: `--model` (default `$ANTHROPIC_MODEL` or `claude-opus-5`), `--effort`
+  (`low`..`max`), `--yes` to skip the data-egress confirmation. Nothing is written to disk -
+  the key and model live in the environment or in that session only.
+* **What is sent**: file names and hashes, signature text, process/registry activity, network
+  endpoints, config fields and payload *strings* - a capped selection, with anything omitted
+  declared to the model and shown in the pane. The sample and payload **bytes** are never sent
+  (a report bundle contains none to begin with). You are asked to confirm once per session.
+* **Cost**: a full run is ~11 calls. The case digest is sent once and cached, so later
+  specialists re-read it at about a tenth of the input price; "Analyze all" shows a token and
+  dollar estimate before it starts, and the status line reports actual spend afterwards.
+* Answers are grounded in the report and say when the evidence does not support a conclusion.
+  Malware content occasionally trips the model's safety classifier; the request carries a
+  server-side fallback, and a decline is shown as one rather than as an empty pane.
+
+Take Results To Another Machine
+* **Zip Results** on the Start panel asks which archive to write:
+  * **Report bundle** (`Desktop\capesolo_report_<timestamp>.zip`) - `report.json`, `capture.json`,
+    `analysis.log` and `files.json`. No sample and no payload bytes, so it is safe to copy to your
+    workstation. Open it directly with `tools/report_viewer.py` (see below); the viewer reads the
+    report out of the zip without extracting anything.
+  * **Full bundle** (`Desktop\capesolo_analysis_<timestamp>.zip`) - the whole analysis directory,
+    for restoring into a clean VM. It contains live malware; treat it accordingly.
+* If there is no `report.json` yet, Zip Results offers to generate one first - the report and the
+  HTML report are now written into the analysis directory as well as the Desktop, which is what
+  makes either bundle self-contained.
+
+Know What Was Captured
+* Every analysis writes `capture.json` next to the results: transfer counts from the ResultServer,
+  which artifacts in `files.json` are missing from disk, which arrived only partially or were
+  truncated at `upload_max_size`, which files the analyzer never uploaded (too big or empty), and
+  the caps that were in force.
+* Anything lost is logged and shown in the status bar when the run ends, carried in `report.json`
+  under `capture`, and rendered on the **Capture** tab of `tools/report_viewer.py`. A payload that
+  was stored only partially is flagged in the Payloads list rather than presented as whole.
+
 Preserve Results From an Unstable VM
-* If a sample makes the VM unusable after detonation, click **Zip Results** on the Start panel to
-  archive the whole analysis directory to `Desktop\capesolo_analysis_<timestamp>.zip`.
+* If a sample makes the VM unusable after detonation, click **Zip Results** and choose the full
+  bundle to archive the whole analysis directory to `Desktop\capesolo_analysis_<timestamp>.zip`.
 * To restore into a clean/reverted VM, copy that zip to `C:\Users\Public\CAPEsolo\restore.zip`,
   then start CAPEsolo. On startup it extracts the zip into the analysis directory (only when that
   directory has no analysis yet) and renames it `restore.zip.done` so it restores once.

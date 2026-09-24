@@ -400,23 +400,46 @@ def LoadFilesJson(analysisDir):
     filePath = Path(analysisDir) / "files.json"
     if filePath.exists():
         content = {}
+        bad = 0
         try:
-            for line in open(filePath, "rb"):
+            lines = filePath.read_bytes().splitlines()
+        except Exception:
+            return {"error": "Corrupt analysis/files.json"}
+
+        for line in lines:
+            # Per line, not per file: one unparsable line or one artifact that never made it
+            # to disk used to abort the whole manifest, so a single casualty hid every other
+            # payload. A skipped entry is reported by the capture manifest instead.
+            if not line.strip():
+                continue
+            try:
                 entry = json.loads(line)
                 path = entry["path"]
-                linePath = Path(analysisDir) / path
-                size = linePath.stat().st_size
-                content[path] = {
-                    "pids": entry.get("pids"),
-                    "ppids": entry.get("ppids"),
-                    "filepath": entry.get("filepath", ""),
-                    "metadata": entry.get("metadata", {}),
-                    "category": entry.get("category", ""),
-                    "size": size,
-                }
-            return content
-        except Exception as e:
-            return {"error": "Corrupt analysis/files.json"}
+                size = (Path(analysisDir) / path).stat().st_size
+            except Exception:
+                bad += 1
+                continue
+
+            content[path] = {
+                "pids": entry.get("pids"),
+                "ppids": entry.get("ppids"),
+                "filepath": entry.get("filepath", ""),
+                "metadata": entry.get("metadata", {}),
+                "category": entry.get("category", ""),
+                "size": size,
+            }
+            # Carried through rather than dropped: the result server records these when an
+            # upload ended early or hit upload_max_size (resultserver.py FileUpload), and
+            # every consumer was silently presenting a partial artifact as a whole one.
+            for flag in ("incomplete", "truncated"):
+                if entry.get(flag):
+                    content[path][flag] = True
+
+        if bad:
+            log.warning("files.json: skipped %d entr%s that could not be read", bad, "y" if bad == 1 else "ies")
+        if not content:
+            return {"error": "No dump files"}
+        return content
     else:
         return {"error": "No dump files"}
 

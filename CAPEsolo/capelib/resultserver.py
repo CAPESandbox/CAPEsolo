@@ -177,6 +177,18 @@ class TransferStats:
             summary += f" truncated={self.truncated}"
         return summary
 
+    def snapshot(self):
+        """Machine-readable counterpart to summary(), for the capture manifest.
+
+        Taken before shutdown resets the counters, so the manifest records what this run
+        actually stored rather than nothing.
+        """
+        return {
+            "complete": self.complete,
+            "incomplete": self.incomplete,
+            "truncated": self.truncated,
+        }
+
 
 STATS = TransferStats()
 

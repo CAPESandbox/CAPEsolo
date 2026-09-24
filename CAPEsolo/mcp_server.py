@@ -1017,8 +1017,9 @@ class AnalysisJobManager:
 
         if write_file:
             # Same writer the GUI's JSON button uses, so the artifact lands in the same
-            # place (~/Desktop/report.json) rather than somewhere headless-specific.
-            written, err = WriteJsonFile(results)
+            # place (~/Desktop/report.json) rather than somewhere headless-specific, plus a
+            # copy in the analysis directory so a results bundle carries its own report.
+            written, err = WriteJsonFile(results, str(self.analysis_dir))
             payload["written"] = bool(written)
             payload["report_path"] = str(Path(os.path.expanduser("~/Desktop")) / "report.json")
             if not written:

@@ -157,6 +157,26 @@ def _seed_user_config():
         pass
 
 
+def _is_report_bundle(archive):
+    """True when this zip is a payload-free report bundle rather than a full analysis.
+
+    Zip Results stamps the kind into capture.json; fall back to the shape of the archive for
+    one written by an older build.
+    """
+    import json
+
+    names = set(archive.namelist())
+    if "capture.json" in names:
+        try:
+            if json.loads(archive.read("capture.json")).get("bundle") == "report":
+                return True
+        except Exception:
+            pass
+    return bool(names) and not any(
+        name.startswith(("files/", "CAPE/", "procdump/", "logs/", "s_")) for name in names
+    )
+
+
 def _restore_results():
     """Restore a preserved analysis into a clean/reverted VM: if a results zip has been dropped at
     %PUBLIC%\\CAPEsolo\\restore.zip and the analysis directory has no analysis yet, extract it so the
@@ -185,6 +205,16 @@ def _restore_results():
     try:
         analysis_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(str(restore_zip)) as archive:
+            # A report bundle carries the report and the manifests but no payload bytes, so
+            # unpacking it here would half-fill the analysis directory and every results tab
+            # would then read an analysis that does not exist on disk.
+            if _is_report_bundle(archive):
+                log.warning(
+                    "%s is a report bundle (no payloads); it is for tools/report_viewer.py, "
+                    "not for restoring. Leaving it alone.",
+                    restore_zip,
+                )
+                return False
             archive.extractall(str(analysis_dir))
     except Exception:
         return False

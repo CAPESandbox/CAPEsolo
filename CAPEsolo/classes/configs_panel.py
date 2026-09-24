@@ -134,12 +134,16 @@ def FormatValue(value):
     return str(value)
 
 
-def Extract(configHits, analysisDir, jsonResults=False, newPayloads=None, seen=None):
+def Extract(configHits, analysisDir, jsonResults=False, newPayloads=None, seen=None, collect=None):
     """Run the config parser for every CAPE name yara matched.
 
     Returns the list of {path: config} the JSON report expects when *jsonResults* is set,
     and otherwise one entry per hit for the panel to render: either "fields" for a config
     that was extracted or "error" describing why there is none.
+
+    *collect*, when given a list, also receives the {path: config} records regardless of
+    which return shape was asked for - the panel needs both at once (rows to render, and
+    the report shape to publish for the signature pass) and the parsers must only run once.
     """
     entries = []
     configs = []
@@ -218,6 +222,8 @@ def Extract(configHits, analysisDir, jsonResults=False, newPayloads=None, seen=N
 
                 if jsonResults:
                     configs.append({hitPath: cfg})
+                if collect is not None:
+                    collect.append({str(hitPath): cfg})
 
                 entries.append(
                     {
@@ -255,6 +261,8 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
     def __init__(self, parent):
         super(ConfigsPanel, self).__init__(parent)
         self.configHits = parent.configHits
+        # Shared with every other tab; the Signatures tab reads what this one publishes.
+        self.results = parent.results
         self.configsComplete = False
         self.analysisDir = parent.analysisDir
         self.capesoloRoot = parent.capesoloRoot
@@ -321,9 +329,11 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         # A dumped payload can itself yield a config that dumps more files. Terminates
         # because the writes are content addressed -- DumpParserFiles skips an existing
         # blob and never re-queues it -- and *processed* bounds the parser runs.
+        configs = []
         while pending:
             newPayloads = []
-            entries += Extract(pending, self.analysisDir, newPayloads=newPayloads, seen=processed)
+            entries += Extract(pending, self.analysisDir, newPayloads=newPayloads,
+                               seen=processed, collect=configs)
             if not newPayloads:
                 break
             mark = len(self.configHits)
@@ -333,6 +343,13 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
 
         # Shown before the rows go in, so the Layout that AddTableData ends with is the one
         # that sizes it, matching SignaturesPanel.
+        # Published for the Signatures tab: the same {path: cfg} list json_report builds,
+        # plus the families those configs came from (results["detections"] in the report).
+        self.results["configs"] = configs
+        self.results["detections"] = sorted({
+            entry["family"] for entry in entries if entry.get("fields") and entry.get("family")
+        })
+
         self.grid.Show()
         self.AddTableData(entries)
         self.configsButton.Disable()

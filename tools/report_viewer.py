@@ -10,9 +10,17 @@ plus a global search and a Raw JSON tree. Built for large reports: the file is r
 a progress bar, the Raw JSON tree loads lazily, and the detail panes are bounded.
 
 Usage:
-    python report_viewer.py [path\\to\\report.json]
+    python report_viewer.py [path\\to\\report.json | path\\to\\bundle.zip] [--theme dark|light]
 
 With no argument it defaults to ~/Desktop/report.json (where CAPEsolo writes it).
+
+A results bundle (Zip Results in CAPEsolo) opens directly: the report is read out of the zip in
+place, so a full bundle's payload bytes are never written to the machine doing the triage. The
+Capture tab reports what the analysis stored and what it lost.
+
+The palette follows the OS setting on Windows and is dark elsewhere; the top-bar button flips it
+for the session, and --theme forces one. Colours mirror CAPEsolo/classes/theme.py, which stays
+the source of truth for them.
 """
 
 import csv
@@ -22,7 +30,9 @@ import os
 import sys
 import threading
 import tkinter as tk
+import zipfile
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 VALUE_PREVIEW_LEN = 200
 MAX_CHILDREN = 2000
@@ -35,25 +45,98 @@ DETAIL_STRINGS = 2000        # cap on strings shown in a payload detail pane
 PLAINTEXT_BLOCK = 8000       # cap on a decrypted request/response block shown in Network
 CALLS_CAP = 5000             # cap on per-process API calls shown in the Processes tab
 TABLE_ROW_CAP = 5000         # cap on rows pushed into a plain table (js events, enhanced, imports)
-# Light-theme row tints for API-call categories (report_viewer uses the light ttk theme, so the
-# wx app's dark BEHAVIOR_CATEGORY_COLORS are not reused). Unmapped categories get no tint.
-CALL_CATEGORY_COLORS = {
-    "filesystem": "#ffe8cc",
-    "registry": "#ffd6d6",
-    "process": "#dbe6ff",
-    "threading": "#cfe8ff",
-    "services": "#e8d9ff",
-    "device": "#f3d9e8",
-    "network": "#d9f5d9",
-    "socket": "#d9f5e2",
-    "synchronization": "#ecd9ff",
-    "browser": "#d9f5ea",
-    "crypto": "#f5f0c2",
-    "system": "#f7f1cf",
-    "hooking": "#e4e4e4",
-    "misc": "#eeeeee",
-    "com": "#d6f0f5",
-    "windows": "#f0e2d0",
+DARK, LIGHT = "dark", "light"
+
+# Palette mirrored from CAPEsolo/classes/theme.py (_PALETTES) so a bundle opened on the host
+# looks like the app it came from. The values are duplicated by necessity - this file must run
+# on a machine with no CAPEsolo install - so theme.py stays the source of truth: change it there
+# first, then copy.
+PALETTES = {
+    DARK: {
+        "BG_MAIN": "#181c24",
+        "BG_CARD": "#212631",
+        "BG_INPUT": "#0f1115",
+        "BG_SURFACE": "#272d3a",
+        "BG_HOVER": "#2c3444",
+        "BG_SELECT": "#1e4066",
+        "FG_SELECT": "#c9d1d9",
+        "FG_PRIMARY": "#c9d1d9",
+        "FG_SECONDARY": "#8b949e",
+        "FG_DISABLED": "#6e7681",
+        "BORDER_SUBTLE": "#2c3340",
+        "BORDER_STRONG": "#677081",
+        "ACCENT": "#58a6ff",
+        "GRID_ROW_ALT": "#191e28",
+    },
+    LIGHT: {
+        "BG_MAIN": "#eceff4",
+        "BG_CARD": "#f6f8fa",
+        "BG_INPUT": "#ffffff",
+        "BG_SURFACE": "#ffffff",
+        "BG_HOVER": "#eaeef2",
+        "BG_SELECT": "#cce8ff",
+        "FG_SELECT": "#24292f",
+        "FG_PRIMARY": "#24292f",
+        "FG_SECONDARY": "#57606a",
+        "FG_DISABLED": "#838c96",
+        "BORDER_SUBTLE": "#d8dee4",
+        "BORDER_STRONG": "#88919a",
+        "ACCENT": "#0969da",
+        "GRID_ROW_ALT": "#f6f8fa",
+    },
+}
+
+# Row tints for API-call categories, from theme.py's _BEHAVIOR_PALETTES. Unmapped categories
+# get no tint. "com" and "windows" have no wx counterpart and are derived to match.
+CALL_CATEGORY_PALETTES = {
+    DARK: {
+        "filesystem": "#503214", "registry": "#501414", "process": "#142850",
+        "threading": "#192850", "services": "#281450", "device": "#321e28",
+        "network": "#143c14", "socket": "#143c14", "synchronization": "#3c1446",
+        "browser": "#143714", "crypto": "#373714", "system": "#3c3714",
+        "hooking": "#323232", "misc": "#282828", "com": "#143c46", "windows": "#3c2814",
+    },
+    LIGHT: {
+        "filesystem": "#ffedd5", "registry": "#fee2e2", "process": "#dbeafe",
+        "threading": "#e0e7ff", "services": "#ede9fe", "device": "#fde8f1",
+        "network": "#dcfce7", "socket": "#dcfce7", "synchronization": "#fae8ff",
+        "browser": "#e2fce7", "crypto": "#fef9c3", "system": "#fef3c7",
+        "hooking": "#f3f4f6", "misc": "#f9fafb", "com": "#d6f0f5", "windows": "#f0e2d0",
+    },
+}
+
+# Treeview row tags that carry meaning rather than category: severity, and the artifact that
+# was not stored whole.
+ROW_TAGS = {
+    DARK: {
+        "sev_high": {"background": "#5c1d1d", "foreground": "#ffb4b4"},
+        "sev_med": {"background": "#5e3f08", "foreground": "#f0d9a8"},
+        "partial": {"background": "#5c1d1d", "foreground": "#ffb4b4"},
+    },
+    LIGHT: {
+        "sev_high": {"background": "#ffdddd", "foreground": "#7a1414"},
+        "sev_med": {"background": "#fff0d0", "foreground": "#7a5514"},
+        "partial": {"background": "#ffe2e2", "foreground": "#7a1414"},
+    },
+}
+
+# Text-pane tags. Applied to every detail pane on a theme change - a tag only paints the ranges
+# that use it, so the union is harmless and keeps the colours in one place.
+TEXT_TAGS = {
+    DARK: {
+        "h": {"font": ("Consolas", 11, "bold"), "foreground": "#58a6ff"},
+        "sev_high": {"foreground": "#ff7b72"},
+        "sev_med": {"foreground": "#d29922"},
+        "warn": {"foreground": "#ff7b72"},
+        "ok": {"foreground": "#3fb950"},
+    },
+    LIGHT: {
+        "h": {"font": ("Consolas", 11, "bold"), "foreground": "#0969da"},
+        "sev_high": {"foreground": "#c0392b"},
+        "sev_med": {"foreground": "#c07a1f"},
+        "warn": {"foreground": "#c0392b"},
+        "ok": {"foreground": "#1e7a3c"},
+    },
 }
 # Every group behavior.Summary.run() returns, in its order, so nothing it collects is dropped.
 SUMMARY_GROUPS = (
@@ -68,6 +151,65 @@ JS_PAIRED_EVENTS = {
     "http_request", "http_response", "http_error", "http_request_body",
 }
 DEFAULT_REPORT = os.path.join(os.path.expanduser("~"), "Desktop", "report.json")
+
+
+def _mono_family():
+    """Pick an installed fixed-width face.
+
+    Tk falls back to a proportional font for a family it does not have, without erroring, so
+    hardcoding "Consolas" renders every detail pane proportionally on Linux and macOS. Needs a
+    Tk root to exist, so it is resolved at construction rather than at import.
+    """
+    try:
+        installed = {name.lower() for name in tkfont.families()}
+    except tk.TclError:
+        return "TkFixedFont"
+    for family in ("Consolas", "Menlo", "DejaVu Sans Mono", "Liberation Mono", "Courier New"):
+        if family.lower() in installed:
+            return family
+    # Tk guarantees this one is fixed-width on every platform.
+    return tkfont.nametofont("TkFixedFont").actual("family")
+
+
+def _detect_theme():
+    """Follow the OS setting where it can be read; dark elsewhere.
+
+    Windows records it per-user in the registry; winreg is stdlib, so this keeps the viewer
+    dependency-free. Anything else (or a locked-down registry) falls back to dark, which is
+    what CAPEsolo itself defaults to.
+    """
+    if sys.platform != "win32":
+        return DARK
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            return LIGHT if winreg.QueryValueEx(key, "AppsUseLightTheme")[0] else DARK
+    except Exception:  # noqa: BLE001 - never let theme detection stop the viewer opening
+        return DARK
+
+
+def _set_titlebar(window, dark):
+    """Darken the OS-drawn title bar on Windows 10 1809+ / 11. No-op everywhere else."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        # 20 is DWMWA_USE_IMMERSIVE_DARK_MODE; 19 was the pre-20H1 attribute number.
+        for attribute in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
+            ) == 0:
+                break
+    except Exception:  # noqa: BLE001 - cosmetic only
+        return
 
 
 def _preview(value):
@@ -107,7 +249,7 @@ def _severity_tag(sev):
 
 
 class ReportViewer:
-    def __init__(self, root, path=None):
+    def __init__(self, root, path=None, theme=None, ai_config=None):
         self.root = root
         self.path = None
         self.report = {}
@@ -116,6 +258,19 @@ class ReportViewer:
         self._prog = None
         self.search_index = []  # list of (category, value, tab_key)
         self.tab_frames = {}    # tab_key -> frame (for search jump)
+        # Widgets the ttk Style cannot reach: tk.Text panes and the per-row tag colours of
+        # every Treeview have to be recoloured by hand when the theme changes.
+        self._texts = []
+        self._trees = []
+        self.style = ttk.Style(root)
+        self.mono = _mono_family()
+        self.mode = theme or _detect_theme()
+        # AI analysis: optional, lazily constructed, and inert until the analyst consents.
+        self.ai_config = ai_config or AIConfig()
+        self.engine = None
+        self.ai_panes = {}
+        self._ai_busy = False
+        self._ai_cancel = threading.Event()
 
         root.title("CAPEsolo Report Viewer")
         root.geometry("1150x720")
@@ -123,10 +278,93 @@ class ReportViewer:
         self._build_menu()
         self._build_topbar()
         self._build_tabs()
+        self._apply_theme(self.mode)
 
         initial = path if (path and os.path.isfile(path)) else DEFAULT_REPORT
         if os.path.isfile(initial):
             self.load(initial)
+
+    # ------------------------------------------------------------------ theme
+    def _apply_theme(self, mode):
+        """Repaint everything. ttk widgets follow the Style; the rest is done by hand."""
+        self.mode = mode
+        palette = PALETTES[mode]
+        self._style_ttk(palette)
+        self.root.configure(bg=palette["BG_MAIN"])
+        for text in self._texts:
+            text.configure(
+                bg=palette["BG_INPUT"], fg=palette["FG_PRIMARY"],
+                insertbackground=palette["FG_PRIMARY"],
+                selectbackground=palette["BG_SELECT"], selectforeground=palette["FG_SELECT"],
+                highlightthickness=0, borderwidth=0,
+            )
+            for tag, options in TEXT_TAGS[mode].items():
+                if "font" in options:
+                    options = dict(options, font=(self.mono,) + tuple(options["font"][1:]))
+                text.tag_configure(tag, **options)
+        for tree in self._trees:
+            for category, color in CALL_CATEGORY_PALETTES[mode].items():
+                tree.tag_configure(category, background=color, foreground=palette["FG_PRIMARY"])
+            for tag, options in ROW_TAGS[mode].items():
+                tree.tag_configure(tag, **options)
+        if hasattr(self, "theme_btn"):
+            self.theme_btn.config(text="Light" if mode == DARK else "Dark")
+        _set_titlebar(self.root, mode == DARK)
+
+    def _style_ttk(self, palette):
+        """clam is the only stock ttk theme that honours these colours on Windows - the
+        native vista/xpnative themes draw from the OS visual style and ignore them."""
+        style = self.style
+        style.theme_use("clam")
+        bg, card, fg = palette["BG_MAIN"], palette["BG_CARD"], palette["FG_PRIMARY"]
+        inputbg, border = palette["BG_INPUT"], palette["BORDER_SUBTLE"]
+        style.configure(".", background=bg, foreground=fg, fieldbackground=inputbg,
+                        bordercolor=border, darkcolor=card, lightcolor=card,
+                        troughcolor=palette["BG_INPUT"], focuscolor=palette["ACCENT"],
+                        insertcolor=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TPanedwindow", background=bg)
+        style.configure("Sash", sashthickness=6, gripcount=0, background=palette["BORDER_SUBTLE"])
+        style.configure("TButton", background=palette["BG_SURFACE"], foreground=fg,
+                        bordercolor=palette["BORDER_STRONG"], focusthickness=1, padding=4)
+        style.map("TButton",
+                  background=[("pressed", palette["BG_HOVER"]), ("active", palette["BG_HOVER"])],
+                  foreground=[("disabled", palette["FG_DISABLED"])])
+        style.configure("TEntry", fieldbackground=inputbg, foreground=fg,
+                        bordercolor=palette["BORDER_STRONG"], insertcolor=fg)
+        style.configure("TCombobox", fieldbackground=inputbg, foreground=fg,
+                        background=palette["BG_SURFACE"], arrowcolor=fg,
+                        bordercolor=palette["BORDER_STRONG"])
+        style.map("TCombobox", fieldbackground=[("readonly", inputbg)],
+                  foreground=[("disabled", palette["FG_DISABLED"])])
+        # The dropdown list is a classic tk Listbox inside the combobox, reachable only
+        # through the option database.
+        self.root.option_add("*TCombobox*Listbox.background", inputbg)
+        self.root.option_add("*TCombobox*Listbox.foreground", fg)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", palette["BG_SELECT"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", palette["FG_SELECT"])
+        style.configure("TNotebook", background=bg, bordercolor=border)
+        style.configure("TNotebook.Tab", background=card, foreground=palette["FG_SECONDARY"],
+                        bordercolor=border, padding=(10, 4))
+        style.map("TNotebook.Tab",
+                  background=[("selected", palette["BG_SURFACE"])],
+                  foreground=[("selected", fg)])
+        style.configure("Treeview", background=inputbg, fieldbackground=inputbg, foreground=fg,
+                        bordercolor=border, rowheight=20)
+        style.map("Treeview", background=[("selected", palette["BG_SELECT"])],
+                  foreground=[("selected", palette["FG_SELECT"])])
+        style.configure("Treeview.Heading", background=palette["BG_SURFACE"], foreground=fg,
+                        bordercolor=border, relief="flat")
+        style.map("Treeview.Heading", background=[("active", palette["BG_HOVER"])])
+        style.configure("TScrollbar", background=palette["BG_SURFACE"],
+                        troughcolor=bg, bordercolor=border, arrowcolor=fg)
+        style.map("TScrollbar", background=[("active", palette["BG_HOVER"])])
+        style.configure("TProgressbar", background=palette["ACCENT"], troughcolor=inputbg,
+                        bordercolor=border)
+
+    def _toggle_theme(self):
+        self._apply_theme(LIGHT if self.mode == DARK else DARK)
 
     # ------------------------------------------------------------------ UI scaffold
     def _build_menu(self):
@@ -150,6 +388,13 @@ class ReportViewer:
         entry.pack(side=tk.LEFT, padx=4)
         entry.bind("<Return>", lambda e: self.on_search())
         ttk.Button(bar, text="Find", command=self.on_search).pack(side=tk.LEFT)
+        # In the top bar rather than the menu: the Windows menubar is OS-drawn and stays
+        # light whatever the palette, so the control that switches themes should not live
+        # in the one strip that cannot follow them.
+        ttk.Button(bar, text="Analyze tab", command=self._analyze_current_tab).pack(
+            side=tk.LEFT, padx=(8, 0))
+        self.theme_btn = ttk.Button(bar, text="Light", width=7, command=self._toggle_theme)
+        self.theme_btn.pack(side=tk.RIGHT, padx=(6, 0))
         self.path_label = ttk.Label(bar, text="")
         self.path_label.pack(side=tk.RIGHT)
 
@@ -157,6 +402,8 @@ class ReportViewer:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self._build_overview_tab()
+        self._build_ai_tab()
+        self._build_capture_tab()
         self._build_signatures_tab()
         self._build_processes_tab()
         self._build_behavior_tab()
@@ -164,6 +411,7 @@ class ReportViewer:
         self._build_jslog_tab()
         self._build_payloads_tab()
         self._build_configs_tab()
+        self._build_yara_tab()
         self._build_static_tab()
         self._build_iocs_tab()
         self._build_raw_tab()
@@ -181,11 +429,13 @@ class ReportViewer:
         ys.grid(row=0, column=1, sticky="ns")
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
+        self._trees.append(tree)
         return frame, tree
 
     def _detail_text(self, parent):
         frame = ttk.Frame(parent)
-        text = tk.Text(frame, wrap=tk.NONE, font=("Consolas", 10), state=tk.DISABLED, height=10)
+        text = tk.Text(frame, wrap=tk.NONE, font=(self.mono, 10), state=tk.DISABLED, height=10)
+        self._texts.append(text)
         ys = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
         xs = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
         text.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
@@ -224,19 +474,19 @@ class ReportViewer:
 
     # ------------------------------------------------------------------ tab widgets
     def _build_overview_tab(self):
+        # Tag colours (h / sev_high / sev_med / warn / ok) come from TEXT_TAGS via
+        # _apply_theme, so every pane follows a theme switch without knowing about it.
         frame, self.overview = self._detail_text(self.notebook)
-        for tag, color in (("h", None), ("sev_high", "#c0392b"), ("sev_med", "#c07a1f")):
-            if color:
-                self.overview.tag_config(tag, foreground=color)
-        self.overview.tag_config("h", font=("Consolas", 11, "bold"))
         self._add_tab(frame, "Overview", "Overview")
+
+    def _build_capture_tab(self):
+        frame, self.capture = self._detail_text(self.notebook)
+        self._add_tab(frame, "Capture", "Capture")
 
     def _build_signatures_tab(self):
         pane = ttk.PanedWindow(self.notebook, orient=tk.VERTICAL)
         tframe, self.sig_tree = self._table(pane, ("Sev", "Name", "Categories"),
                                             {"Sev": 45, "Name": 260, "Categories": 220})
-        self.sig_tree.tag_configure("sev_high", background="#ffdddd", foreground="#7a1414")
-        self.sig_tree.tag_configure("sev_med", background="#fff0d0", foreground="#7a5514")
         self.sig_tree.bind("<<TreeviewSelect>>", self._on_sig_select)
         dframe, self.sig_detail = self._detail_text(pane)
         pane.add(tframe, weight=2)
@@ -284,8 +534,6 @@ class ReportViewer:
              "Arguments": 300, "Status": 60, "Return": 90, "Repeated": 70},
         )
         cframe.pack(fill=tk.BOTH, expand=True)
-        for cat, color in CALL_CATEGORY_COLORS.items():
-            self.proc_calls.tag_configure(cat, background=color)
         self._proc_calls_all = []
         rpane.add(dframe, weight=1)
         rpane.add(callsFrame, weight=3)
@@ -413,8 +661,8 @@ class ReportViewer:
     def _build_payloads_tab(self):
         pane = ttk.PanedWindow(self.notebook, orient=tk.VERTICAL)
         tframe, self.pay_tree = self._table(
-            pane, ("Name", "Type", "Size", "SHA256", "PID"),
-            {"Name": 220, "Type": 200, "Size": 90, "SHA256": 320, "PID": 60},
+            pane, ("Name", "Type", "Size", "SHA256", "PID", "State"),
+            {"Name": 220, "Type": 200, "Size": 90, "SHA256": 300, "PID": 60, "State": 90},
         )
         self.pay_tree.bind("<<TreeviewSelect>>", self._on_pay_select)
         self._pay_rows = {}
@@ -435,6 +683,19 @@ class ReportViewer:
         pane.add(tframe, weight=2)
         pane.add(dframe, weight=1)
         self._add_tab(pane, "Configs", "Configs")
+
+    def _build_yara_tab(self):
+        pane = ttk.PanedWindow(self.notebook, orient=tk.VERTICAL)
+        tframe, self.yara_tree = self._table(
+            pane, ("File", "Rule", "CAPE name", "Strings", "Description"),
+            {"File": 260, "Rule": 200, "CAPE name": 120, "Strings": 70, "Description": 420},
+        )
+        self.yara_tree.bind("<<TreeviewSelect>>", self._on_yara_select)
+        self._yara_rows = {}
+        dframe, self.yara_detail = self._detail_text(pane)
+        pane.add(tframe, weight=2)
+        pane.add(dframe, weight=2)
+        self._add_tab(pane, "Yara", "Yara")
 
     def _build_static_tab(self):
         outer = ttk.Frame(self.notebook)
@@ -510,6 +771,8 @@ class ReportViewer:
         win.title("Loading")
         win.transient(self.root)
         win.resizable(False, False)
+        win.configure(bg=PALETTES[self.mode]["BG_MAIN"])
+        _set_titlebar(win, self.mode == DARK)
         ttk.Label(win, text=f"Loading {os.path.basename(path)}\n(a large report may pause while parsing)",
                   justify="center").pack(padx=24, pady=(16, 8))
         bar = ttk.Progressbar(win, mode="determinate", maximum=100, length=380)
@@ -529,25 +792,74 @@ class ReportViewer:
 
     def _load_worker(self, path, shared):
         try:
+            # A CAPEsolo results bundle is a zip with report.json at its root; reading it in
+            # place means payload bytes in a full bundle are never written to this machine.
+            if zipfile.is_zipfile(path):
+                buf, capture = self._read_bundle(path, shared)
+            else:
+                buf, capture = self._read_plain(path, shared), None
+            if buf is None:  # cancelled
+                shared["error"] = "cancelled"
+                return
+            shared["phase"] = "parsing"
+            gc.disable()
+            try:
+                data = json.loads(buf)
+            finally:
+                gc.enable()
+            _merge_capture(data, capture)
+            shared["data"] = data
+        except Exception as e:  # noqa: BLE001
+            shared["error"] = e
+
+    @staticmethod
+    def _read_plain(path, shared):
+        buf = bytearray()
+        with open(path, "rb") as f:
+            while True:
+                if shared["cancel"]:
+                    return None
+                chunk = f.read(READ_CHUNK)
+                if not chunk:
+                    break
+                buf += chunk
+                shared["read"] = len(buf)
+        return buf
+
+    @staticmethod
+    def _read_bundle(path, shared):
+        """Read report.json - and capture.json, if present - out of a bundle zip."""
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            member = _bundle_member(names, "report.json")
+            if member is None:
+                listing = ", ".join(sorted(names)[:20]) or "nothing"
+                raise ValueError(
+                    "This zip contains no report.json, so there is no report to show.\n\n"
+                    f"It contains: {listing}\n\n"
+                    "Generate a report in CAPEsolo (JSON Report), then zip the results again."
+                )
+            # Progress against the uncompressed member, not the archive.
+            shared["size"] = max(1, archive.getinfo(member).file_size)
             buf = bytearray()
-            with open(path, "rb") as f:
+            with archive.open(member) as fd:
                 while True:
                     if shared["cancel"]:
-                        shared["error"] = "cancelled"
-                        return
-                    chunk = f.read(READ_CHUNK)
+                        return None, None
+                    chunk = fd.read(READ_CHUNK)
                     if not chunk:
                         break
                     buf += chunk
                     shared["read"] = len(buf)
-            shared["phase"] = "parsing"
-            gc.disable()
-            try:
-                shared["data"] = json.loads(buf)
-            finally:
-                gc.enable()
-        except Exception as e:  # noqa: BLE001
-            shared["error"] = e
+
+            capture = None
+            captureMember = _bundle_member(names, "capture.json")
+            if captureMember:
+                try:
+                    capture = json.loads(archive.read(captureMember))
+                except ValueError:
+                    capture = None
+            return buf, capture
 
     def _poll_load(self, path, shared):
         win, bar, status = self._prog
@@ -584,8 +896,19 @@ class ReportViewer:
 
     def _on_loaded(self, report):
         self.report = report if isinstance(report, dict) else {"report": report}
+        self.engine = None
+        for pane in self.ai_panes.values():
+            pane["tree"].delete(*pane["tree"].get_children())
+            pane["rows"] = {}
+            pane["status"].config(text="not run")
+            self._set_text(pane["detail"], "")
+        if hasattr(self, "ai_status"):
+            self.ai_status.config(text="")
+        if hasattr(self, "ask_text"):
+            self._clear_ask()
         self._build_raw(report)
         self._build_overview()
+        self._build_capture()
         self._build_signatures()
         self._build_processes()
         self._build_behavior()
@@ -593,6 +916,7 @@ class ReportViewer:
         self._build_jslog()
         self._build_payloads()
         self._build_configs()
+        self._build_yara()
         self._build_static()
         self._build_iocs()
         self._build_index()
@@ -611,6 +935,13 @@ class ReportViewer:
 
         def line(t):
             self.overview.insert(tk.END, t + "\n")
+
+        verdict = self._ai_overview_lines()
+        if verdict:
+            head("AI verdict")
+            for entry in verdict:
+                line(entry)
+            line("")
 
         head("File")
         for k in ("name", "type", "size", "md5", "sha1", "sha256"):
@@ -643,11 +974,26 @@ class ReportViewer:
         line(f"  network hosts: {len(net.get('hosts') or [])}  domains: {len(net.get('domains') or [])}"
              f"  http: {len(net.get('http') or [])}")
         line(f"  payloads: {len(r.get('payloads') or [])}")
-        line(f"  yara (target): {len((target.get('yara') or []))}")
+        line(f"  yara hits: {len(r.get('yara') or [])}"
+             f"  (target: {len(target.get('yara') or [])})")
         line(f"  anomalies: {len(beh.get('anomaly') or [])}"
              f"  encrypted buffers: {len(beh.get('encryptedbuffers') or [])}")
         js = r.get("js_log") or {}
         line(f"  js events: {js.get('parsed_lines', 0) if js.get('exists') else 'no js log'}")
+
+        # Say up front whether the rest of this report is the whole picture.
+        capture = r.get("capture") or {}
+        warnings = capture.get("warnings") or []
+        head("\nCapture")
+        if not capture:
+            line("  no capture manifest in this report")
+        elif warnings:
+            for warning in warnings:
+                self.overview.insert(tk.END, "  ! ", "sev_high")
+                line(warning)
+            line("  (see the Capture tab)")
+        else:
+            line("  nothing reported lost")
         self.overview.config(state=tk.DISABLED)
 
     # ------------------------------------------------------------------ Signatures
@@ -763,7 +1109,7 @@ class ReportViewer:
             status = "Success" if call.get("status") else "Failure"
             ret = call.get("pretty_return") or call.get("return", "")
             cat = call.get("category")
-            tags = (cat,) if cat in CALL_CATEGORY_COLORS else ()
+            tags = (cat,) if cat in CALL_CATEGORY_PALETTES[self.mode] else ()
             self.proc_calls.insert("", "end", tags=tags, values=(
                 cell(call.get("timestamp", "")), cell(call.get("thread_id", "")),
                 cell(call.get("caller", "")), cell(call.get("parentcaller", "")),
@@ -837,6 +1183,91 @@ class ReportViewer:
         if self.call_cat.get() not in (["all"] + cats):
             self.call_cat.set("all")
         self._apply_call_filters()
+
+    # ------------------------------------------------------------------ Capture
+    def _build_capture(self):
+        """What the analysis managed to store, and what it lost.
+
+        Without this the viewer cannot tell a quiet analysis from a lossy one: a payload that
+        was skipped for size, truncated at upload_max_size or never stored simply is not in
+        the report, and every other tab renders as if that were the whole picture.
+        """
+        cap = self.report.get("capture") or {}
+        self.capture.config(state=tk.NORMAL)
+        self.capture.delete("1.0", tk.END)
+
+        def head(t):
+            self.capture.insert(tk.END, t + "\n", "h")
+
+        def line(t, tag=None):
+            self.capture.insert(tk.END, t + "\n", tag or ())
+
+        if not cap:
+            line("No capture manifest in this report.")
+            line("")
+            line("Reports written before capture accounting existed have none. Re-run the JSON")
+            line("Report button in CAPEsolo to produce one, or check capture.json in the")
+            line("analysis directory.")
+            self.capture.config(state=tk.DISABLED)
+            return
+
+        warnings = cap.get("warnings") or []
+        head("Verdict")
+        if warnings:
+            for warning in warnings:
+                line(f"  ! {warning}", "warn")
+        else:
+            line("  Nothing was reported lost - every listed artifact is present and whole.", "ok")
+        if cap.get("bundle"):
+            line(f"  bundle: {cap['bundle']}"
+                 + ("  (payload bytes deliberately left in the guest)"
+                    if cap["bundle"] == "report" else ""))
+        if cap.get("generated"):
+            line(f"  generated: {cap['generated']}")
+
+        transfers = cap.get("transfers") or {}
+        if transfers:
+            head("\nTransfers")
+            line(f"  complete: {transfers.get('complete', 0)}"
+                 f"   incomplete: {transfers.get('incomplete', 0)}"
+                 f"   truncated: {transfers.get('truncated', 0)}")
+
+        files = cap.get("files") or {}
+        if files:
+            head("\nFiles")
+            line(f"  listed in files.json: {files.get('listed', 0)}"
+                 f"   present on disk: {files.get('present', 0)}")
+            if files.get("unreadable_lines"):
+                line(f"  unreadable files.json lines: {files['unreadable_lines']}", "warn")
+            for label, key in (("missing", "missing"), ("incomplete", "incomplete"),
+                               ("truncated", "truncated")):
+                entries = files.get(key) or []
+                if entries:
+                    line(f"  {label} ({len(entries)}):", "warn")
+                    for name in entries[:MAX_CHILDREN]:
+                        line(f"    {name}")
+                    if len(entries) > MAX_CHILDREN:
+                        line(f"    … {len(entries) - MAX_CHILDREN} more")
+
+        skipped = cap.get("skipped") or []
+        if skipped:
+            head("\nNever uploaded")
+            for entry in skipped[:MAX_CHILDREN]:
+                size = f" ({entry['size']} bytes)" if entry.get("size") else ""
+                line(f"  [{entry.get('reason', '?')}] {entry.get('path', '')}{size}", "warn")
+
+        artifacts = cap.get("artifacts") or {}
+        if artifacts:
+            head("\nArtifacts present")
+            for name, value in artifacts.items():
+                line(f"  {name}: {value}")
+
+        limits = cap.get("limits") or {}
+        if limits:
+            head("\nLimits in force")
+            for key, value in limits.items():
+                line(f"  {key}: {_preview(value)}")
+        self.capture.config(state=tk.DISABLED)
 
     # ------------------------------------------------------------------ Behavior
     def _build_behavior(self):
@@ -1245,12 +1676,14 @@ class ReportViewer:
                 continue
             for path, data in entry.items():
                 data = data or {}
-                item = self.pay_tree.insert("", "end", values=(
+                state = ", ".join(f for f in ("incomplete", "truncated") if data.get(f))
+                item = self.pay_tree.insert("", "end", tags=("partial",) if state else (), values=(
                     data.get("name", os.path.basename(str(path))),
                     data.get("cape_type", ""),
                     data.get("size", ""),
                     data.get("sha256", ""),
                     data.get("pid", ""),
+                    state,
                 ))
                 self._pay_rows[item] = (path, data)
         self._set_text(self.pay_detail, "")
@@ -1301,6 +1734,77 @@ class ReportViewer:
         path, key, value = self._cfg_rows.get(sel[0], ("", "", ""))
         self._set_text(self.cfg_detail,
                        f"file: {path}\nfield: {key}\n\n{self._detail_value(value)}")
+
+    # ------------------------------------------------------------------ Yara
+    def _yara_hits(self):
+        """Every hit, from the report's own section or reconstructed for older reports.
+
+        report.json gained a top-level "yara" section (json_report.YaraHits); before that,
+        hits only existed attached to the target and to individual payloads, and hits on
+        parser-dumped files were dropped entirely. Fall back so an old report still shows
+        what it does have.
+        """
+        hits = self.report.get("yara")
+        if hits:
+            return hits
+
+        recovered = []
+        target = self.report.get("target") or {}
+        for hit in target.get("yara") or []:
+            recovered.append({"file": target.get("name", "target"), "rule": hit.get("name", ""),
+                              "capename": "", "meta": hit.get("meta") or {},
+                              "description": (hit.get("meta") or {}).get("description", ""),
+                              "strings": hit.get("strings") or [],
+                              "addresses": hit.get("addresses") or {}})
+        for entry in self.report.get("payloads") or []:
+            for path, data in (entry.items() if isinstance(entry, dict) else []):
+                for hit in (data or {}).get("yara") or []:
+                    recovered.append({"file": os.path.basename(str(path)),
+                                      "rule": hit.get("name", ""), "capename": "",
+                                      "meta": hit.get("meta") or {},
+                                      "description": (hit.get("meta") or {}).get("description", ""),
+                                      "strings": hit.get("strings") or [],
+                                      "addresses": hit.get("addresses") or {}})
+        return recovered
+
+    def _build_yara(self):
+        self.yara_tree.delete(*self.yara_tree.get_children())
+        self._yara_rows = {}
+        for hit in self._yara_hits():
+            item = self.yara_tree.insert("", "end", values=(
+                _preview(hit.get("file", "")), hit.get("rule", ""), hit.get("capename", ""),
+                len(hit.get("strings") or []), _preview(hit.get("description", ""))))
+            self._yara_rows[item] = hit
+        count = len(self._yara_rows)
+        files = len({h.get("file") for h in self._yara_rows.values()})
+        self._set_text(self.yara_detail,
+                       f"{count} hit(s) across {files} file(s). Select one for its metadata, "
+                       "matched strings and offsets."
+                       if count else "No yara hits in this report.")
+
+    def _on_yara_select(self, event):
+        selection = self.yara_tree.selection()
+        if not selection:
+            return
+        hit = self._yara_rows.get(selection[0])
+        if not hit:
+            return
+        lines = [f"file: {hit.get('file', '')}", f"rule: {hit.get('rule', '')}"]
+        if hit.get("capename"):
+            lines.append(f"CAPE name: {hit['capename']}")
+        meta = hit.get("meta") or {}
+        if meta:
+            lines += ["", "meta:"] + [f"  {k}: {_preview(v)}" for k, v in meta.items()]
+        strings = hit.get("strings") or []
+        if strings:
+            lines += ["", f"matched strings ({len(strings)}):"]
+            lines += [f"  {s}" for s in strings[:DETAIL_STRINGS]]
+            if len(strings) > DETAIL_STRINGS:
+                lines.append(f"  … {len(strings) - DETAIL_STRINGS} more")
+        addresses = hit.get("addresses") or {}
+        if addresses:
+            lines += ["", "offsets:"] + [f"  {k}: {v}" for k, v in addresses.items()]
+        self._set_text(self.yara_detail, "\n".join(lines))
 
     # ------------------------------------------------------------------ Static / PE
     def _build_static(self):
@@ -1519,6 +2023,8 @@ class ReportViewer:
         win = tk.Toplevel(self.root)
         win.title(f"Search: {term} ({len(matches)})")
         win.geometry("700x400")
+        win.configure(bg=PALETTES[self.mode]["BG_MAIN"])
+        _set_titlebar(win, self.mode == DARK)
         frame, tree = self._table(win, ("Category", "Match", "Tab"),
                                   {"Category": 100, "Match": 460, "Tab": 100})
         frame.pack(fill=tk.BOTH, expand=True)
@@ -1599,18 +2105,1043 @@ class ReportViewer:
             text = text[:MAX_SCALAR] + f"\n\n… (truncated; {len(text)} chars total)"
         return text
 
+    # ------------------------------------------------------------------ AI analysis UI
+    def _build_ai_tab(self):
+        outer = ttk.Frame(self.notebook)
+        bar = ttk.Frame(outer)
+        bar.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Button(bar, text="Analyze all", command=self._run_all_agents).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Settings", command=self._ai_settings).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Cancel", command=self._cancel_ai).pack(side=tk.LEFT)
+        self.ai_status = ttk.Label(bar, text="")
+        self.ai_status.pack(side=tk.RIGHT)
+        inner = ttk.Notebook(outer)
+        inner.pack(fill=tk.BOTH, expand=True)
+        self.ai_notebook = inner
+
+        for tab, _focus in AGENTS:
+            pane = ttk.PanedWindow(inner, orient=tk.VERTICAL)
+            head = ttk.Frame(pane)
+            row = ttk.Frame(head)
+            row.pack(fill=tk.X, padx=2, pady=2)
+            button = ttk.Button(row, text=f"Analyze {tab}",
+                                command=lambda t=tab: self._run_agent(t))
+            button.pack(side=tk.LEFT)
+            status = ttk.Label(row, text="not run")
+            status.pack(side=tk.RIGHT)
+            tframe, tree = self._table(head, ("Severity", "Finding"),
+                                       {"Severity": 90, "Finding": 820})
+            tframe.pack(fill=tk.BOTH, expand=True)
+            tree.bind("<<TreeviewSelect>>", lambda e, t=tab: self._on_finding_select(t))
+            dframe, detail = self._detail_text(pane)
+            pane.add(head, weight=2)
+            pane.add(dframe, weight=3)
+            inner.add(pane, text=tab)
+            self.ai_panes[tab] = {"tree": tree, "detail": detail, "status": status,
+                                  "button": button, "rows": {}}
+
+        # Ask: the same engine, with a tool that can reach past the digest into the report.
+        askFrame = ttk.Frame(inner)
+        askBar = ttk.Frame(askFrame)
+        askBar.pack(fill=tk.X, padx=2, pady=2)
+        ttk.Label(askBar, text="Question:").pack(side=tk.LEFT)
+        self.ask_entry = ttk.Entry(askBar)
+        self.ask_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.ask_entry.bind("<Return>", lambda e: self._ask())
+        ttk.Button(askBar, text="Ask", command=self._ask).pack(side=tk.LEFT)
+        ttk.Button(askBar, text="Clear", command=self._clear_ask).pack(side=tk.LEFT, padx=4)
+        aframe, self.ask_text = self._detail_text(askFrame)
+        aframe.pack(fill=tk.BOTH, expand=True)
+        inner.add(askFrame, text="Ask")
+        self._ask_history = []
+        self._add_tab(outer, "AI", "AI")
+
+    # -- plumbing ----------------------------------------------------------------------
+    def _ensure_engine(self):
+        """Build the engine on first use, after the analyst has agreed to the egress."""
+        if not self.report:
+            raise AIUnavailable("Load a report first.")
+        if not self._ai_consent():
+            return None
+        if self.engine is None:
+            self.engine = AnalysisEngine(self.report, self.ai_config)
+        return self.engine
+
+    def _ai_consent(self):
+        """Say plainly what leaves the machine, once per session."""
+        if self.ai_config.consented:
+            return True
+        agreed = messagebox.askokcancel(
+            "Send report data to the Anthropic API?",
+            "AI analysis sends parts of this report - file names and hashes, signature text, "
+            "process and registry activity, network endpoints, config fields and payload "
+            "strings - to the Anthropic API.\n\n"
+            "Payload bytes and the sample itself are never sent.\n\n"
+            "Nothing is sent until you press OK, and every other tab works without this.",
+        )
+        self.ai_config.consented = bool(agreed)
+        return self.ai_config.consented
+
+    def _ai_settings(self):
+        """Session-only settings: nothing here is written to disk."""
+        win = tk.Toplevel(self.root)
+        win.title("AI settings")
+        win.transient(self.root)
+        win.configure(bg=PALETTES[self.mode]["BG_MAIN"])
+        _set_titlebar(win, self.mode == DARK)
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        ttk.Label(frame, text="Kept for this session only - never written to disk.").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        entries = {}
+        for row, (label, value, hide) in enumerate((
+            ("API key", self.ai_config.api_key, True),
+            ("Model", self.ai_config.model, False),
+            ("Effort", self.ai_config.effort, False),
+        ), start=1):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            entry = ttk.Entry(frame, width=46, show="*" if hide else "")
+            entry.insert(0, value or "")
+            entry.grid(row=row, column=1, sticky="ew", padx=6, pady=2)
+            entries[label] = entry
+        source = "environment" if os.environ.get("ANTHROPIC_API_KEY") else "not set"
+        ttk.Label(frame, text=f"ANTHROPIC_API_KEY: {source}").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        def save():
+            self.ai_config.api_key = entries["API key"].get().strip()
+            self.ai_config.model = entries["Model"].get().strip() or DEFAULT_MODEL
+            self.ai_config.effort = entries["Effort"].get().strip() or DEFAULT_EFFORT
+            # The engine caches a client built from the old settings.
+            self.engine = None
+            win.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(buttons, text="Save", command=save).pack(side=tk.LEFT, padx=4)
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side=tk.LEFT)
+        frame.columnconfigure(1, weight=1)
+
+    def _ai_busy_set(self, busy, message=""):
+        self._ai_busy = busy
+        self.ai_status.config(text=message)
+        for pane in self.ai_panes.values():
+            pane["button"].config(state=tk.DISABLED if busy else tk.NORMAL)
+
+    def _cancel_ai(self):
+        if self._ai_busy:
+            self._ai_cancel.set()
+            # An HTTP request already in flight cannot be pulled back; say so rather than
+            # implying the current agent stopped.
+            self.ai_status.config(text="cancelling after the current agent…")
+
+    def _ai_thread(self, work, done):
+        """Run an engine call off the UI thread, deliver the result back on it."""
+        def runner():
+            try:
+                result = work()
+                self.root.after(0, lambda: done(result, None))
+            except Exception as e:  # noqa: BLE001 - surfaced in the pane, never swallowed
+                self.root.after(0, lambda e=e: done(None, e))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    # -- running the agents ------------------------------------------------------------
+    def _run_agent(self, tab):
+        if self._ai_busy:
+            return
+        try:
+            engine = self._ensure_engine()
+        except AIUnavailable as e:
+            self._set_text(self.ai_panes[tab]["detail"], str(e))
+            return
+        if engine is None:
+            return
+        self._ai_cancel = threading.Event()
+        self._ai_busy_set(True, f"running {tab}…")
+        self.ai_panes[tab]["status"].config(text="running…")
+
+        def done(result, error):
+            self._ai_busy_set(False, self._spend_text())
+            if error is not None:
+                self.ai_panes[tab]["status"].config(text="failed")
+                self._set_text(self.ai_panes[tab]["detail"], str(error))
+                return
+            self._render_findings(tab, result)
+
+        self._ai_thread(lambda: engine.analyze(tab), done)
+
+    def _run_all_agents(self):
+        if self._ai_busy:
+            return
+        try:
+            engine = self._ensure_engine()
+        except AIUnavailable as e:
+            messagebox.showerror("AI analysis", str(e))
+            return
+        if engine is None:
+            return
+        try:
+            estimate = engine.estimate()
+        except AIUnavailable as e:
+            messagebox.showerror("AI analysis", str(e))
+            return
+        except Exception as e:  # noqa: BLE001 - a failed estimate must not block the run
+            estimate = None
+            log_line = str(e)
+            self.ai_status.config(text=f"could not estimate cost: {log_line}")
+        if estimate and not messagebox.askokcancel(
+            "Run all agents?",
+            f"{estimate['agents']} specialists plus a synthesis pass, on "
+            f"{self.ai_config.model}.\n\n"
+            f"Input: ~{estimate['input_tokens']:,} tokens\n"
+            f"Output: ~{estimate['output_tokens']:,} tokens (estimated)\n"
+            f"Cost: ~${estimate['dollars']:.2f}\n\n"
+            "The case digest is cached, so the later agents re-read it at about a tenth of "
+            "that input price - the real cost is usually lower.",
+        ):
+            return
+
+        self._ai_cancel = threading.Event()
+        self._ai_busy_set(True, "starting…")
+
+        def progress(step, total, tab):
+            self.root.after(0, lambda: self.ai_status.config(
+                text=f"{step}/{total} {tab}…"))
+
+        def done(result, error):
+            self._ai_busy_set(False, self._spend_text())
+            if error is not None:
+                messagebox.showerror("AI analysis", str(error))
+                return
+            for tab in AGENT_KEYS:
+                if tab in engine.results:
+                    self._render_findings(tab, engine.results[tab])
+            if result is None:
+                self.ai_status.config(text="cancelled - " + self._spend_text())
+                return
+            self._build_overview()          # verdict card now has something to show
+            self.notebook.select(self.tab_frames["Overview"])
+
+        self._ai_thread(
+            lambda: engine.analyze_all(progress=progress, cancelled=self._ai_cancel.is_set),
+            done)
+
+    def _analyze_current_tab(self):
+        """Top-bar shortcut: run the specialist for whichever tab is open."""
+        try:
+            current = self.notebook.tab(self.notebook.select(), "text")
+        except tk.TclError:
+            return
+        if current not in self.ai_panes:
+            messagebox.showinfo(
+                "AI analysis",
+                f"No specialist for the {current} tab.\n\n"
+                "Open one of: " + ", ".join(AGENT_KEYS))
+            return
+        self.notebook.select(self.tab_frames["AI"])
+        self.ai_notebook.select(list(self.ai_panes).index(current))
+        self._run_agent(current)
+
+    def _spend_text(self):
+        if self.engine is None or not self.engine.usage["calls"]:
+            return ""
+        usage = self.engine.usage
+        return (f"{usage['calls']} calls  in {usage['input']:,} "
+                f"(cached {usage['cache_read']:,})  out {usage['output']:,}  "
+                f"~${self.engine.spend():.2f}")
+
+    # -- rendering ---------------------------------------------------------------------
+    def _render_findings(self, tab, result):
+        pane = self.ai_panes[tab]
+        pane["tree"].delete(*pane["tree"].get_children())
+        pane["rows"] = {}
+        result = result or {}
+
+        if "refusal" in result:
+            pane["status"].config(text="declined")
+            self._set_text(pane["detail"],
+                           f"The model declined this request (category: {result['refusal']}).\n\n"
+                           f"{result.get('explanation', '')}\n\n"
+                           "Malware evidence can trip the safety classifier. The request already "
+                           "carries a server-side fallback, so this means the fallback declined "
+                           "too. Try a narrower question on the Ask tab.")
+            return
+        if "error" in result:
+            pane["status"].config(text="failed")
+            self._set_text(pane["detail"], str(result["error"]))
+            return
+
+        findings = result.get("findings") or []
+        for finding in findings:
+            severity = str(finding.get("severity", "info"))
+            tags = ("sev_high",) if severity in ("critical", "high") else (
+                ("sev_med",) if severity == "medium" else ())
+            item = pane["tree"].insert("", "end", tags=tags,
+                                       values=(severity, _preview(finding.get("title", ""))))
+            pane["rows"][item] = finding
+        pane["status"].config(
+            text=f"{len(findings)} finding(s), confidence {result.get('confidence', '?')}")
+
+        lines = [result.get("verdict", ""), ""]
+        if result.get("iocs"):
+            lines += ["indicators:"] + [f"  {ioc}" for ioc in result["iocs"]] + [""]
+        if result.get("gaps"):
+            lines += ["gaps:"] + [f"  {gap}" for gap in result["gaps"]] + [""]
+        lines.append("Select a finding for its evidence.")
+        self._set_text(pane["detail"], "\n".join(lines))
+
+    def _on_finding_select(self, tab):
+        pane = self.ai_panes[tab]
+        selection = pane["tree"].selection()
+        if not selection:
+            return
+        finding = pane["rows"].get(selection[0])
+        if not finding:
+            return
+        lines = [finding.get("title", ""), f"severity: {finding.get('severity', '')}", "",
+                 finding.get("rationale", ""), "", "evidence:"]
+        lines += [f"  {item}" for item in finding.get("evidence") or []]
+        self._set_text(pane["detail"], "\n".join(lines))
+
+    def _ai_overview_lines(self):
+        """The verdict card, folded into the Overview tab when a synthesis exists."""
+        synthesis = getattr(self.engine, "synthesis", None) if self.engine else None
+        if not synthesis or "verdict" not in synthesis:
+            return []
+        lines = [
+            "",
+            f"  {synthesis['verdict']}",
+            (f"  family: {synthesis.get('family', 'unknown')}   "
+             f"confidence: {synthesis.get('confidence', '?')}"),
+        ]
+        for label, key in (("certain", "certain"), ("inferred", "inferred"),
+                           ("next steps", "next_steps")):
+            for entry in synthesis.get(key) or []:
+                lines.append(f"  [{label}] {entry}")
+        return lines
+
+    # -- Ask ---------------------------------------------------------------------------
+    def _ask(self):
+        question = self.ask_entry.get().strip()
+        if not question or self._ai_busy:
+            return
+        try:
+            engine = self._ensure_engine()
+        except AIUnavailable as e:
+            self._append_ask(f"\n{e}\n")
+            return
+        if engine is None:
+            return
+        self.ask_entry.delete(0, tk.END)
+        self._append_ask(f"\n> {question}\n\n")
+        self._ai_cancel = threading.Event()
+        self._ai_busy_set(True, "asking…")
+
+        def done(result, error):
+            self._ai_busy_set(False, self._spend_text())
+            if error is not None:
+                self._append_ask(f"[error] {error}\n")
+                return
+            answer, history = result
+            self._ask_history = history
+            self._append_ask(answer + "\n")
+
+        self._ai_thread(lambda: engine.ask(question, self._ask_history), done)
+
+    def _append_ask(self, text):
+        self.ask_text.config(state=tk.NORMAL)
+        self.ask_text.insert(tk.END, text)
+        self.ask_text.see(tk.END)
+        self.ask_text.config(state=tk.DISABLED)
+
+    def _clear_ask(self):
+        self._ask_history = []
+        self._set_text(self.ask_text, "")
+
     # ------------------------------------------------------------------ menu actions
     def on_open(self):
         initial = os.path.dirname(self.path) if self.path else os.path.dirname(DEFAULT_REPORT)
-        path = filedialog.askopenfilename(title="Open CAPEsolo report", initialdir=initial,
-                                          initialfile="report.json",
-                                          filetypes=[("JSON report", "*.json"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Open CAPEsolo report", initialdir=initial, initialfile="report.json",
+            filetypes=[("Report or bundle", "*.json *.zip"), ("JSON report", "*.json"),
+                       ("Results bundle", "*.zip"), ("All files", "*.*")])
         if path:
             self.load(path)
 
     def on_reload(self):
         if self.path:
             self.load(self.path)
+
+
+# ============================================================================ AI analysis
+# Optional by design: the viewer runs on bare stdlib, and these features light up only when
+# the anthropic SDK is installed. Without it every pane shows an install hint and the rest of
+# the viewer is untouched.
+
+DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_EFFORT = "high"
+ANALYSIS_MAX_TOKENS = 16000
+CHAT_MAX_TOKENS = 64000
+# Malware triage content can trip the cyber safety classifier. The server-side fallback re-runs
+# a declined request on a fallback model inside the same call, so a refusal degrades to a
+# second opinion rather than an empty pane.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# List prices, $ per million tokens (input, output), for the pre-run estimate only.
+MODEL_PRICES = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-fable-5-1": (10.0, 50.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+# How much of each section a slice may carry. A report is routinely hundreds of MB; the model
+# gets a selection, and every cap that bites is declared to it (and to the analyst) rather than
+# silently dropping evidence.
+CAPS = {
+    "signatures": 40, "processes": 40, "calls": 150, "network": 60, "payloads": 40,
+    "strings": 60, "events": 120, "iocs": 250, "config_fields": 80, "summary": 60,
+    "imports": 60, "sections": 30, "buffers": 20, "yara": 60,
+}
+
+SYSTEM_PROMPT = """You are a senior malware analyst triaging a CAPEsolo sandbox report.
+
+You are given a case digest and one section of evidence. Both are SELECTIONS from a much larger
+report: any "omitted" field tells you what was left out, and you must reason within that limit -
+say what the evidence supports, say plainly when it does not support a conclusion, and never
+invent an artifact that is not in the data you were given.
+
+Ground every finding in specific evidence from the input (an API call, a signature name, a host,
+a config field, a string). Prefer "insufficient evidence" over a confident guess. Note when the
+capture manifest shows the analysis lost data that would have changed your answer."""
+
+# One specialist per evidence tab. The key matches the viewer's tab key so the top-bar button
+# can analyse whatever tab the analyst is looking at.
+AGENTS = (
+    ("Signatures", (
+        "Which signature matches are load-bearing and which are noise, what they collectively "
+        "imply about family and capability, and which are contradicted by other evidence.")),
+    ("Processes", (
+        "The execution chain as a narrative: what spawned what, which processes are injected or "
+        "hollowed, and which API activity is anomalous for the process it came from.")),
+    ("Behavior", (
+        "Host-based TTPs: persistence, defence evasion, privilege use, service and registry "
+        "manipulation, and what the encrypted buffers reveal.")),
+    ("Network", (
+        "Command-and-control assessment: which endpoints are real C2 versus noise or telemetry, "
+        "beaconing shape, and the intent of any decrypted request.")),
+    ("JS Log", (
+        "Script-stage behaviour: fetch/XHR activity, dropped buffers, eval chains, and what the "
+        "script was trying to retrieve or execute.")),
+    ("Payloads", (
+        "What each dumped artifact is, the unpacking chain between them, and which payload is "
+        "the real final stage.")),
+    ("Configs", (
+        "What each extracted configuration field means operationally, and what the campaign and "
+        "infrastructure look like from it.")),
+    ("Yara", (
+        "Which rules are meaningful versus generic shelf rules, what the CAPE names imply "
+        "about family, and whether the hits agree with the signatures and extracted configs.")),
+    ("Static", (
+        "Static indicators from the PE: packing, signing, suspicious imports, resources, and "
+        "section anomalies.")),
+    ("IOCs", (
+        "Which indicators are actually actionable for detection or blocking, with a confidence "
+        "for each, and which are environment noise that would cause false positives.")),
+    ("Capture", (
+        "Whether the evidence is complete enough to trust a verdict, and which specific "
+        "conclusions are weakened by what the analysis failed to collect.")),
+)
+AGENT_KEYS = tuple(key for key, _focus in AGENTS)
+
+FINDINGS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "description": "One or two sentences: what this evidence shows."},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+                    "evidence": {"type": "array", "items": {"type": "string"},
+                                 "description": "Verbatim artifacts from the input supporting this."},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["title", "severity", "evidence", "rationale"],
+                "additionalProperties": False,
+            },
+        },
+        "iocs": {"type": "array", "items": {"type": "string"}},
+        "gaps": {"type": "array", "items": {"type": "string"},
+                 "description": "What you could not determine, and what evidence would settle it."},
+    },
+    "required": ["verdict", "confidence", "findings", "iocs", "gaps"],
+    "additionalProperties": False,
+}
+
+SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string"},
+        "family": {"type": "string", "description": "Best-supported family, or 'unknown'."},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "certain": {"type": "array", "items": {"type": "string"},
+                    "description": "Conclusions the evidence directly supports."},
+        "inferred": {"type": "array", "items": {"type": "string"},
+                     "description": "Conclusions that are inference, with the leap named."},
+        "next_steps": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["verdict", "family", "confidence", "certain", "inferred", "next_steps"],
+    "additionalProperties": False,
+}
+
+
+def load_anthropic():
+    """Import the SDK on demand. Returns the module, or None when it is not installed."""
+    try:
+        import anthropic
+
+        return anthropic
+    except ImportError:
+        return None
+
+
+class AIConfig:
+    """Resolution order: explicit argument, then a session override, then the environment.
+
+    Nothing is written to disk - the viewer is opened on whatever host is triaging a malware
+    bundle, and an API key should not be left behind on it.
+    """
+
+    def __init__(self, api_key=None, model=None, effort=None):
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.model = model or os.environ.get("ANTHROPIC_MODEL", "") or DEFAULT_MODEL
+        self.effort = effort or DEFAULT_EFFORT
+        self.consented = False
+
+    @property
+    def ready(self):
+        return bool(self.api_key)
+
+    def price(self):
+        return MODEL_PRICES.get(self.model, MODEL_PRICES[DEFAULT_MODEL])
+
+
+# ---------------------------------------------------------------------------- the digest
+def _cap(items, limit, label, omitted):
+    """Take the first *limit* items, recording what that left behind."""
+    items = list(items or ())
+    if len(items) > limit:
+        omitted[label] = f"showing {limit} of {len(items)}"
+        return items[:limit]
+    return items
+
+
+def _trim(value, length=400):
+    text = " ".join(str(value).split())
+    return text if len(text) <= length else text[:length] + "…"
+
+
+def case_digest(report):
+    """The shared context every agent sees, and the cached prefix of every request."""
+    target = report.get("target") or {}
+    behavior = report.get("behavior") or {}
+    network = report.get("network") or {}
+    capture = report.get("capture") or {}
+    omitted = {}
+
+    signatures = sorted(report.get("signatures") or [],
+                        key=lambda s: s.get("severity") or 0, reverse=True)
+    processes = behavior.get("processes") or []
+    payloads = []
+    for entry in report.get("payloads") or []:
+        for path, data in (entry.items() if isinstance(entry, dict) else []):
+            data = data or {}
+            payloads.append({"name": data.get("name") or os.path.basename(str(path)),
+                             "type": data.get("cape_type") or data.get("type", ""),
+                             "size": data.get("size", ""), "pid": data.get("pid", "")})
+
+    return {
+        "target": {k: target.get(k) for k in ("name", "type", "size", "md5", "sha256")
+                   if target.get(k) not in (None, "")},
+        "detections": report.get("detections") or [],
+        "top_signatures": [{"name": s.get("name"), "severity": s.get("severity"),
+                            "description": _trim(s.get("description", ""), 200)}
+                           for s in _cap(signatures, 15, "top_signatures", omitted)],
+        "processes": [{"pid": p.get("process_id"), "name": p.get("process_name"),
+                       "parent": p.get("parent_id"), "calls": len(p.get("calls") or [])}
+                      for p in _cap(processes, 20, "processes", omitted)],
+        "network": {
+            "hosts": [h.get("ip") for h in _cap(network.get("hosts"), 20, "hosts", omitted)],
+            "domains": [d.get("domain") for d in _cap(network.get("domains"), 20, "domains", omitted)],
+            "http": [f"{h.get('method', '')} {h.get('host', '')}{h.get('uri', '')}"
+                     for h in _cap(network.get("http"), 20, "http", omitted)],
+        },
+        "payloads": _cap(payloads, 20, "payloads", omitted),
+        "config_families": [os.path.basename(str(path)) for entry in report.get("configs") or []
+                            for path in (entry.keys() if isinstance(entry, dict) else [])],
+        "yara_rules": sorted({f"{h.get('rule', '')}"
+                              + (f" [{h['capename']}]" if h.get("capename") else "")
+                              for h in _cap(report.get("yara"), 25, "yara_rules", omitted)}),
+        # The model is told what the analysis itself failed to collect, so it can caveat a
+        # verdict built on partial evidence instead of treating absence as absence of activity.
+        "capture": {"warnings": capture.get("warnings") or [],
+                    "transfers": capture.get("transfers") or {}},
+        "omitted": omitted,
+    }
+
+
+def tab_slice(report, tab):
+    """The evidence for one agent, capped, with what was dropped declared alongside it."""
+    behavior = report.get("behavior") or {}
+    network = report.get("network") or {}
+    target = report.get("target") or {}
+    omitted = {}
+    data = {}
+
+    if tab == "Signatures":
+        data["signatures"] = [
+            {"name": s.get("name"), "severity": s.get("severity"),
+             "description": s.get("description"), "categories": s.get("categories"),
+             "families": s.get("families"),
+             "evidence": [_trim(d, 300) for d in (s.get("data") or [])][:10],
+             "marks": [{"process": (m.get("process") or {}).get("process_name"),
+                        "signs": [f"{x.get('type')}={_trim(x.get('value'), 200)}"
+                                  for x in (m.get("signs") or [])][:5]}
+                       for m in (s.get("new_data") or [])][:5]}
+            for s in _cap(report.get("signatures"), CAPS["signatures"], "signatures", omitted)
+        ]
+    elif tab == "Processes":
+        data["processtree"] = behavior.get("processtree") or []
+        procs = []
+        for process in _cap(behavior.get("processes"), CAPS["processes"], "processes", omitted):
+            calls = process.get("calls") or []
+            categories = {}
+            for call in calls:
+                categories[call.get("category") or "?"] = categories.get(call.get("category") or "?", 0) + 1
+            sample_omitted = {}
+            procs.append({
+                "pid": process.get("process_id"), "name": process.get("process_name"),
+                "parent": process.get("parent_id"),
+                "command_line": (process.get("environ") or {}).get("CommandLine", ""),
+                "call_count": len(calls), "call_categories": categories,
+                "sampled_calls": [
+                    {"api": c.get("api"), "category": c.get("category"),
+                     "status": c.get("status"),
+                     "args": _trim("; ".join(f"{a.get('name')}={a.get('value')}"
+                                             for a in (c.get("arguments") or [])
+                                             if isinstance(a, dict)), 300)}
+                    for c in _cap(calls, CAPS["calls"], "calls", sample_omitted)],
+            })
+            if sample_omitted:
+                procs[-1]["omitted"] = sample_omitted
+        data["processes"] = procs
+    elif tab == "Behavior":
+        summary = behavior.get("summary") or {}
+        data["summary"] = {group: _cap(values, CAPS["summary"], f"summary.{group}", omitted)
+                           for group, values in summary.items() if values}
+        data["anomalies"] = behavior.get("anomaly") or []
+        data["encrypted_buffers"] = [
+            {"process": b.get("process_name"), "api": b.get("api_call"),
+             "buffer": _trim(b.get("buffer"), 600)}
+            for b in _cap(behavior.get("encryptedbuffers"), CAPS["buffers"], "buffers", omitted)]
+        data["enhanced"] = _cap(behavior.get("enhanced"), CAPS["events"], "enhanced", omitted)
+    elif tab == "Network":
+        data["sources"] = network.get("sources")
+        data["dns"] = _cap(network.get("dns"), CAPS["network"], "dns", omitted)
+        data["http"] = [{k: v for k, v in h.items() if k != "body"}
+                        for h in _cap(network.get("http"), CAPS["network"], "http", omitted)]
+        data["hosts"] = _cap(network.get("hosts"), CAPS["network"], "hosts", omitted)
+        data["domains"] = _cap(network.get("domains"), CAPS["network"], "domains", omitted)
+        data["flows"] = _cap((network.get("tcp") or []) + (network.get("udp") or []),
+                             CAPS["network"], "flows", omitted)
+        data["decrypted"] = [
+            {"host": e.get("host"), "method": e.get("method"), "uri": e.get("uri"),
+             "status": e.get("status"), "request": _trim(e.get("request"), 800),
+             "response": _trim(e.get("response"), 800)}
+            for e in _cap((network.get("http_ex") or []) + (network.get("https_ex") or []),
+                          20, "decrypted", omitted)]
+    elif tab == "JS Log":
+        js = report.get("js_log") or {}
+        data["exists"] = js.get("exists")
+        data["counters"] = {k: js.get(k) for k in ("total_lines", "parsed_lines", "malformed_lines")}
+        data["events"] = [{k: _trim(v, 300) for k, v in event.items()}
+                          for event in _cap(js.get("events"), CAPS["events"], "events", omitted)]
+        data["buffers"] = js.get("buffers") or []
+    elif tab == "Payloads":
+        entries = []
+        for entry in report.get("payloads") or []:
+            for path, payload in (entry.items() if isinstance(entry, dict) else []):
+                payload = payload or {}
+                entries.append({
+                    "name": payload.get("name") or os.path.basename(str(path)),
+                    "cape_type": payload.get("cape_type"), "type": payload.get("type"),
+                    "size": payload.get("size"), "sha256": payload.get("sha256"),
+                    "pid": payload.get("pid"), "process": payload.get("process_name"),
+                    "target_process": payload.get("target_process"),
+                    "incomplete": payload.get("incomplete"), "truncated": payload.get("truncated"),
+                    "yara": [h.get("name") for h in (payload.get("yara") or [])],
+                    "strings": (payload.get("strings") or [])[-CAPS["strings"]:],
+                })
+        data["payloads"] = _cap(entries, CAPS["payloads"], "payloads", omitted)
+    elif tab == "Configs":
+        configs = []
+        for entry in report.get("configs") or []:
+            for path, cfg in (entry.items() if isinstance(entry, dict) else []):
+                fields = dict(_cap(list(_pairs(cfg)), CAPS["config_fields"], "config_fields", omitted))
+                configs.append({"file": os.path.basename(str(path)), "fields": fields})
+        data["configs"] = configs
+        data["detections"] = report.get("detections") or []
+    elif tab == "Yara":
+        data["hits"] = [
+            {"file": hit.get("file"), "rule": hit.get("rule"),
+             "capename": hit.get("capename"), "description": hit.get("description"),
+             "meta": hit.get("meta"),
+             "matched_strings": (hit.get("strings") or [])[:20],
+             "offsets": len(hit.get("addresses") or {})}
+            for hit in _cap(report.get("yara"), CAPS["yara"], "yara", omitted)]
+        data["detections"] = report.get("detections") or []
+        data["config_families"] = [os.path.basename(str(path))
+                                   for entry in report.get("configs") or []
+                                   for path in (entry.keys() if isinstance(entry, dict) else [])]
+    elif tab == "Static":
+        pe = target.get("pe") or {}
+        data["file"] = {k: target.get(k) for k in
+                        ("name", "type", "size", "md5", "sha256", "tlsh") if target.get(k)}
+        data["yara"] = [{"name": h.get("name"),
+                         "description": (h.get("meta") or {}).get("description")}
+                        for h in (target.get("yara") or [])]
+        data["pe"] = {k: pe.get(k) for k in
+                      ("imagebase", "entrypoint", "imphash", "timestamp", "pdbpath",
+                       "reported_checksum", "actual_checksum", "digital_signers", "versioninfo",
+                       "overlay", "exported_dll_name") if pe.get(k)}
+        data["sections"] = _cap(pe.get("sections"), CAPS["sections"], "sections", omitted)
+        imports = [f"{entry.get('dll')}!{symbol.get('name')}"
+                   for entry in (pe.get("imports") or {}).values()
+                   for symbol in (entry.get("imports") or [])]
+        data["imports"] = _cap(imports, CAPS["imports"], "imports", omitted)
+    elif tab == "IOCs":
+        summary = behavior.get("summary") or {}
+        data["indicators"] = {
+            group: _cap(values, 40, f"iocs.{group}", omitted)
+            for group, values in summary.items() if values
+        }
+        data["hosts"] = [h.get("ip") for h in (network.get("hosts") or [])][:CAPS["iocs"]]
+        data["domains"] = [d.get("domain") for d in (network.get("domains") or [])][:CAPS["iocs"]]
+        data["detections"] = report.get("detections") or []
+    elif tab == "Capture":
+        data["capture"] = report.get("capture") or {}
+        data["payload_flags"] = [
+            {"name": (payload or {}).get("name"), "incomplete": (payload or {}).get("incomplete"),
+             "truncated": (payload or {}).get("truncated")}
+            for entry in report.get("payloads") or []
+            for payload in (entry.values() if isinstance(entry, dict) else [])
+            if (payload or {}).get("incomplete") or (payload or {}).get("truncated")]
+
+    if omitted:
+        data["omitted"] = omitted
+    return data
+
+
+# ---------------------------------------------------------------------------- the engine
+class AIUnavailable(Exception):
+    """Raised when the SDK or a key is missing - always shown, never swallowed."""
+
+
+class AnalysisEngine:
+    """One engine behind all three surfaces (tabs, Ask pane, CLI), so an answer does not
+    depend on where it was asked from.
+
+    The client is injectable: the tests drive a stub and never reach the network.
+    """
+
+    def __init__(self, report, config=None, client=None):
+        self.report = report or {}
+        self.config = config or AIConfig()
+        self.digest = case_digest(self.report)
+        self.results = {}       # tab -> parsed findings, or {"error"/"refusal": ...}
+        self.synthesis = None
+        self.usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "calls": 0}
+        self._client = client
+        self._sdk = None
+
+    # -- client ------------------------------------------------------------------------
+    def client(self):
+        if self._client is not None:
+            return self._client
+        self._sdk = load_anthropic()
+        if self._sdk is None:
+            raise AIUnavailable(
+                "The anthropic SDK is not installed.\n\n"
+                "    pip install anthropic\n\n"
+                "Every other tab works without it."
+            )
+        if not self.config.api_key:
+            raise AIUnavailable(
+                "No API key. Set ANTHROPIC_API_KEY in the environment, pass --api-key, or "
+                "enter one in Settings (it is kept for this session only)."
+            )
+        self._client = self._sdk.Anthropic(api_key=self.config.api_key)
+        return self._client
+
+    @property
+    def available(self):
+        return load_anthropic() is not None and self.config.ready
+
+    # -- request building --------------------------------------------------------------
+    def _context(self, body):
+        """The cached case digest, then this request's own evidence.
+
+        The digest block carries the cache breakpoint and the system prompt is identical for
+        every agent, so the whole prefix is shared: the second and later agents re-read the
+        case at cache rates instead of paying for it again.
+        """
+        return [
+            {"type": "text",
+             "text": "CASE DIGEST\n" + json.dumps(self.digest, indent=2, default=str),
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": body},
+        ]
+
+    def _record(self, response):
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        self.usage["calls"] += 1
+        self.usage["input"] += getattr(usage, "input_tokens", 0) or 0
+        self.usage["output"] += getattr(usage, "output_tokens", 0) or 0
+        self.usage["cache_read"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+        self.usage["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0) or 0
+
+    @staticmethod
+    def _refusal(response):
+        """Check before reading content: a declined request returns 200 with no answer."""
+        if getattr(response, "stop_reason", None) != "refusal":
+            return None
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None) or "unspecified"
+        explanation = getattr(details, "explanation", None) or ""
+        return {"refusal": category, "explanation": explanation}
+
+    @staticmethod
+    def _text(response):
+        for block in getattr(response, "content", None) or []:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        return ""
+
+    def _structured(self, body, schema, instruction):
+        """One agent call: structured JSON out, refusal handled, usage recorded."""
+        response = self.client().beta.messages.create(
+            model=self.config.model,
+            max_tokens=ANALYSIS_MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": self.config.effort,
+                           "format": {"type": "json_schema", "schema": schema}},
+            # A cyber-category decline is a live possibility on malware evidence; the
+            # server-side fallback answers from another model in the same call.
+            betas=[FALLBACK_BETA],
+            fallbacks="default",
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": self._context(body + "\n\n" + instruction)}],
+        )
+        self._record(response)
+        refused = self._refusal(response)
+        if refused:
+            return refused
+        try:
+            return json.loads(self._text(response))
+        except ValueError as e:
+            return {"error": f"Model returned unparsable JSON: {e}"}
+
+    # -- the agents --------------------------------------------------------------------
+    def analyze(self, tab):
+        """Run one tab's specialist. Returns the parsed findings and stores them."""
+        focus = dict(AGENTS).get(tab)
+        if focus is None:
+            raise ValueError(f"No agent for tab {tab!r}")
+        evidence = tab_slice(self.report, tab)
+        body = f"EVIDENCE - {tab}\n" + json.dumps(evidence, indent=2, default=str)
+        instruction = (
+            f"You are the {tab} specialist. Focus on: {focus}\n"
+            "Report only what this evidence supports. If a cap in an 'omitted' field means you "
+            "cannot answer something, say so in gaps rather than guessing."
+        )
+        result = self._structured(body, FINDINGS_SCHEMA, instruction)
+        self.results[tab] = result
+        return result
+
+    def synthesize(self):
+        """Lead-analyst pass over the specialists' findings, not over the raw report."""
+        if not self.results:
+            raise ValueError("Nothing to synthesise - run the tab agents first")
+        body = "SPECIALIST FINDINGS\n" + json.dumps(
+            {tab: result for tab, result in self.results.items()}, indent=2, default=str)
+        instruction = (
+            "You are the lead analyst. Reconcile the specialists' findings into one verdict. "
+            "Name the family only if the evidence supports it. Separate what the evidence "
+            "directly shows from what you are inferring, and name the leap in each inference. "
+            "Where specialists disagree, say which you believe and why."
+        )
+        self.synthesis = self._structured(body, SYNTHESIS_SCHEMA, instruction)
+        return self.synthesis
+
+    def analyze_all(self, tabs=None, progress=None, cancelled=None):
+        """Run each specialist then synthesise, reporting progress and honouring cancel."""
+        tabs = tabs or AGENT_KEYS
+        for index, tab in enumerate(tabs, 1):
+            if cancelled is not None and cancelled():
+                return None
+            if progress:
+                progress(index, len(tabs) + 1, tab)
+            try:
+                self.analyze(tab)
+            except AIUnavailable:
+                raise
+            except Exception as e:  # noqa: BLE001 - one dead agent must not sink the run
+                self.results[tab] = {"error": str(e)}
+        if cancelled is not None and cancelled():
+            return None
+        if progress:
+            progress(len(tabs) + 1, len(tabs) + 1, "Overview")
+        return self.synthesize()
+
+    # -- interactive -------------------------------------------------------------------
+    def ask(self, question, history=None):
+        """Answer a question, with a tool that can fetch what the digest left out.
+
+        This is the one place a tool loop earns its keep: the digest is a selection, and
+        without a way back to the full report the model would have to guess about anything
+        capped out of it.
+        """
+        sdk = load_anthropic()
+        if sdk is None and self._client is None:
+            raise AIUnavailable("The anthropic SDK is not installed.\n\n    pip install anthropic")
+        report = self.report
+
+        def report_query(path: str, limit: int = 20) -> str:
+            """Read a slice of the full analysis report that the digest may have omitted.
+
+            Args:
+                path: Dotted path into report.json, e.g. "behavior.summary.mutexes",
+                    "network.dns", "signatures", "behavior.processes.0.calls".
+                limit: Maximum number of list entries to return.
+            """
+            node = report
+            for part in [p for p in str(path).split(".") if p]:
+                if isinstance(node, dict):
+                    node = node.get(part)
+                elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+                    node = node[int(part)]
+                else:
+                    return f"No such path: {path}"
+                if node is None:
+                    return f"No such path: {path}"
+            if isinstance(node, list):
+                total = len(node)
+                node = node[:max(1, min(int(limit), 200))]
+                return json.dumps({"total": total, "returned": len(node), "items": node},
+                                  indent=2, default=str)[:20000]
+            return json.dumps(node, indent=2, default=str)[:20000]
+
+        # The SDK's decorator builds the tool schema from the signature and docstring above.
+        # With an injected client and no SDK (the tests) the bare function stands in - it is
+        # recorded, never sent.
+        decorate = getattr(sdk, "beta_tool", None)
+        tools = [decorate(report_query) if decorate else report_query]
+        messages = list(history or [])
+        messages.append({"role": "user", "content": self._context(f"QUESTION\n{question}")})
+        runner = self.client().beta.messages.tool_runner(
+            model=self.config.model,
+            max_tokens=ANALYSIS_MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": self.config.effort},
+            betas=[FALLBACK_BETA],
+            fallbacks="default",
+            system=SYSTEM_PROMPT,
+            tools=tools,
+            messages=messages,
+        )
+        response = runner.until_done()
+        self._record(response)
+        refused = self._refusal(response)
+        if refused:
+            return (f"[declined: {refused['refusal']}] {refused['explanation']}".strip(),
+                    messages)
+        answer = self._text(response)
+        messages.append({"role": "assistant", "content": answer})
+        return answer, messages
+
+    # -- cost --------------------------------------------------------------------------
+    def estimate(self, tabs=None):
+        """Count tokens for the planned run and price it, before anything is spent."""
+        tabs = tabs or AGENT_KEYS
+        total_input = 0
+        for tab in tabs:
+            body = f"EVIDENCE - {tab}\n" + json.dumps(tab_slice(self.report, tab),
+                                                      indent=2, default=str)
+            counted = self.client().messages.count_tokens(
+                model=self.config.model,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": self._context(body)}],
+            )
+            total_input += getattr(counted, "input_tokens", 0) or 0
+        # Output is unknown before the fact; assume each agent fills a third of its budget.
+        est_output = len(tabs) * (ANALYSIS_MAX_TOKENS // 3)
+        in_price, out_price = self.config.price()
+        return {
+            "agents": len(tabs),
+            "input_tokens": total_input,
+            "output_tokens": est_output,
+            "dollars": total_input / 1e6 * in_price + est_output / 1e6 * out_price,
+        }
+
+    def spend(self):
+        """What has actually been spent so far, from the responses' own usage."""
+        in_price, out_price = self.config.price()
+        return (self.usage["input"] / 1e6 * in_price
+                + self.usage["cache_read"] / 1e6 * in_price * 0.1
+                + self.usage["output"] / 1e6 * out_price)
+
+
+def _merge_capture(data, capture):
+    """Fold a bundle's capture.json into the report it sits beside.
+
+    The report's own manifest wins, but only capture.json knows which kind of bundle this is:
+    the report was written into the analysis directory before any archive existed, so it can
+    never carry that stamp.
+    """
+    if not capture or not isinstance(data, dict):
+        return data
+    existing = data.get("capture")
+    if not existing:
+        data["capture"] = capture
+    elif capture.get("bundle") and not existing.get("bundle"):
+        existing["bundle"] = capture["bundle"]
+    return data
+
+
+def read_report(path):
+    """Load a report or bundle outside the GUI, for the headless CLI paths."""
+    shared = {"read": 0, "size": 1, "cancel": False}
+    if zipfile.is_zipfile(path):
+        buf, capture = ReportViewer._read_bundle(path, shared)
+    else:
+        buf, capture = ReportViewer._read_plain(path, shared), None
+    return _merge_capture(json.loads(buf), capture)
+
+
+def _bundle_member(names, target):
+    """Find *target* at the zip root, or anywhere in it if the bundle was nested."""
+    if target in names:
+        return target
+    for name in names:
+        if name.rsplit("/", 1)[-1] == target:
+            return name
+    return None
 
 
 def _pairs(cfg):
@@ -1623,12 +3154,170 @@ def _pairs(cfg):
                 yield from element.items()
 
 
+USAGE = """CAPEsolo report viewer
+
+    python report_viewer.py [report.json | bundle.zip] [options]
+
+    --theme dark|light   force a palette (default: follow the OS on Windows)
+    --model ID           Claude model (default: $ANTHROPIC_MODEL or claude-opus-5)
+    --api-key KEY        API key (default: $ANTHROPIC_API_KEY)
+    --effort LEVEL       low|medium|high|xhigh|max (default: high)
+    --ask "QUESTION"     answer one question about the report and exit
+    --chat               interactive question loop in the terminal
+    --analyze [TAB|all]  run the AI specialists headless and print their findings
+    --yes                skip the "this sends data to the API" confirmation
+"""
+
+EGRESS_NOTICE = """AI analysis sends parts of this report - file names and hashes, signature
+text, process and registry activity, network endpoints, config fields and payload strings - to
+the Anthropic API. Payload bytes and the sample itself are never sent."""
+
+
+def _take_option(args, name, default=None):
+    """Pull "--name value" out of the argument list, returning the value."""
+    if name not in args:
+        return default
+    index = args.index(name)
+    value = args[index + 1] if index + 1 < len(args) and not args[index + 1].startswith("--") else ""
+    del args[index:index + (2 if value else 1)]
+    return value or default
+
+
+def _confirm_egress(assume_yes):
+    if assume_yes:
+        return True
+    print(EGRESS_NOTICE)
+    try:
+        return input("\nContinue? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _print_findings(tab, result):
+    print(f"\n=== {tab} " + "=" * max(0, 68 - len(tab)))
+    if "refusal" in result:
+        print(f"declined ({result['refusal']}): {result.get('explanation', '')}")
+        return
+    if "error" in result:
+        print(f"error: {result['error']}")
+        return
+    print(f"{result.get('verdict', '')}   [confidence: {result.get('confidence', '?')}]")
+    for finding in result.get("findings") or []:
+        print(f"\n  [{finding.get('severity', '?')}] {finding.get('title', '')}")
+        print(f"      {finding.get('rationale', '')}")
+        for item in finding.get("evidence") or []:
+            print(f"      - {item}")
+    if result.get("iocs"):
+        print("\n  indicators: " + ", ".join(result["iocs"]))
+    if result.get("gaps"):
+        print("  gaps:")
+        for gap in result["gaps"]:
+            print(f"    - {gap}")
+
+
+def run_cli(path, config, mode, question, assume_yes):
+    """Headless surfaces: --ask, --chat and --analyze. Never opens a window."""
+    if not path or not os.path.isfile(path):
+        print(f"No report to read: {path or '(none given)'}")
+        return 2
+    if load_anthropic() is None:
+        print("The anthropic SDK is not installed.\n\n    pip install anthropic")
+        return 3
+    if not config.ready:
+        print("No API key. Set ANTHROPIC_API_KEY or pass --api-key.")
+        return 3
+    if not _confirm_egress(assume_yes):
+        print("Cancelled - nothing was sent.")
+        return 1
+
+    engine = AnalysisEngine(read_report(path), config)
+    try:
+        if mode == "ask":
+            answer, _history = engine.ask(question)
+            print("\n" + answer)
+        elif mode == "chat":
+            print("Ask about this report. Ctrl-C or 'exit' to quit.\n")
+            history = []
+            while True:
+                try:
+                    line = input("> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if line.lower() in ("exit", "quit"):
+                    break
+                if not line:
+                    continue
+                answer, history = engine.ask(line, history)
+                print("\n" + answer + "\n")
+        else:
+            tabs = AGENT_KEYS if question in ("", "all", None) else (question,)
+            unknown = [tab for tab in tabs if tab not in AGENT_KEYS]
+            if unknown:
+                print(f"No specialist for {unknown[0]!r}. Choose from: {', '.join(AGENT_KEYS)}")
+                return 2
+            for tab in tabs:
+                _print_findings(tab, engine.analyze(tab))
+            if len(tabs) > 1:
+                synthesis = engine.synthesize()
+                print("\n=== Overview " + "=" * 57)
+                if "verdict" in synthesis:
+                    print(f"{synthesis['verdict']}\n")
+                    print(f"family: {synthesis.get('family')}   "
+                          f"confidence: {synthesis.get('confidence')}")
+                    for label in ("certain", "inferred", "next_steps"):
+                        for entry in synthesis.get(label) or []:
+                            print(f"  [{label}] {entry}")
+                else:
+                    print(synthesis)
+    except AIUnavailable as e:
+        print(str(e))
+        return 3
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+    finally:
+        if engine.usage["calls"]:
+            usage = engine.usage
+            print(f"\n{usage['calls']} call(s)  in {usage['input']:,} "
+                  f"(cached {usage['cache_read']:,})  out {usage['output']:,}  "
+                  f"~${engine.spend():.2f}")
+    return 0
+
+
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(USAGE)
+        return 0
+
+    theme = _take_option(args, "--theme")
+    if theme is not None and theme not in (DARK, LIGHT):
+        print(f"--theme takes {DARK} or {LIGHT}")
+        return 2
+    config = AIConfig(api_key=_take_option(args, "--api-key"),
+                      model=_take_option(args, "--model"),
+                      effort=_take_option(args, "--effort"))
+    assume_yes = "--yes" in args
+    if assume_yes:
+        args.remove("--yes")
+    question = _take_option(args, "--ask")
+    mode = "ask" if question is not None else None
+    if "--chat" in args:
+        args.remove("--chat")
+        mode = "chat"
+    if "--analyze" in args:
+        question = _take_option(args, "--analyze", "all")
+        mode = "analyze"
+    path = args[0] if args else (DEFAULT_REPORT if mode else None)
+
+    if mode:
+        return run_cli(path, config, mode, question, assume_yes)
+
     root = tk.Tk()
-    ReportViewer(root, path)
+    ReportViewer(root, path, theme=theme, ai_config=config)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

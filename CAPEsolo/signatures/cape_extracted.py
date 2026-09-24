@@ -13,6 +13,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
+
 from CAPEsolo.capelib.signatures import Signature
 
 
@@ -47,10 +49,23 @@ class CAPEExtractedConfig(Signature):
     evented = True
 
     def run(self):
-        ret = False
-        for block in self.results.get("CAPE", {}).get("cape_config", []) or []:
-            for malwarename in block.keys():
-                self.data.append({"extracted_config": malwarename})
-                ret = True
+        # Upstream reads CAPE["cape_config"], a list keyed by malware name. CAPEsolo keys its
+        # configs by the file they came out of (json_report.Configs -> [{path: cfg}]) and
+        # keeps the families it matched in results["detections"], so the family name comes
+        # from there rather than from the dict key.
+        configs = self.results.get("CAPE", {}).get("configs", []) or []
+        if not configs:
+            return False
 
-        return ret
+        families = self.results.get("detections") or []
+        if not families:
+            families = sorted({
+                os.path.basename(str(path))
+                for entry in configs if isinstance(entry, dict)
+                for path in entry
+            })
+
+        for family in families:
+            self.data.append({"extracted_config": family})
+
+        return bool(families)

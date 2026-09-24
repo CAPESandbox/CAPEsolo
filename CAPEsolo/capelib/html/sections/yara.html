@@ -1,0 +1,47 @@
+<div class="mt-4">
+    <div class="section-title">
+        <h4>Yara</h4>
+    </div>
+    {% set tab_name = 'yara' %}
+    {% if results.yara %}
+        <p>{{ results.yara | length }} hit(s) across {{ results.yara | map(attribute='file') | unique | list | length }} file(s).</p>
+        <div id="accordionYara">
+        {% for hit in results.yara %}
+            <div class="card mt-2">
+                <div class="card-header" id="headingYara{{loop.index}}">
+                    <h5 class="mb-0">
+                        <button class="btn btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#collapseYara{{loop.index}}" aria-expanded="false" aria-controls="collapseYara{{loop.index}}">
+                            {{hit.rule}}{% if hit.capename %} [{{hit.capename}}]{% endif %} - {{hit.file}}
+                        </button>
+                    </h5>
+                </div>
+                <div id="collapseYara{{loop.index}}" class="collapse" aria-labelledby="headingYara{{loop.index}}" data-bs-parent="#accordionYara">
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr><th scope="row">File</th><td>{{hit.file}}</td></tr>
+                            <tr><th scope="row">Rule</th><td>{{hit.rule}}</td></tr>
+                            {% if hit.capename %}<tr><th scope="row">CAPE name</th><td>{{hit.capename}}</td></tr>{% endif %}
+                            {% if hit.description %}<tr><th scope="row">Description</th><td>{{hit.description}}</td></tr>{% endif %}
+                            {% for key, value in (hit.meta or {}).items() %}
+                                {% if key != 'description' %}<tr><th scope="row">{{key}}</th><td>{{value}}</td></tr>{% endif %}
+                            {% endfor %}
+                        </table>
+                        {% if hit.strings %}
+                            <h6>Matched strings ({{ hit.strings | length }})</h6>
+                            <pre class="pre-scrollable">{% for string in hit.strings %}{{string}}
+{% endfor %}</pre>
+                        {% endif %}
+                        {% if hit.addresses %}
+                            <h6>Offsets</h6>
+                            <pre>{% for name, offset in hit.addresses.items() %}{{name}}: {{offset}}
+{% endfor %}</pre>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+        </div>
+    {% else %}
+        <p>Nothing to display.</p>
+    {% endif %}
+</div>
