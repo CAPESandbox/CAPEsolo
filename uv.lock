@@ -40,19 +40,6 @@ wheels = [
 ]
 
 [[package]]
-name = "beautifulsoup4"
-version = "4.15.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "soupsieve" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl", hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9", size = 109924, upload-time = "2026-06-07T16:44:21.566Z" },
-]
-
-[[package]]
 name = "brotli"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -101,18 +88,6 @@ wheels = [
 ]
 
 [[package]]
-name = "bs2json"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "beautifulsoup4" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/b1/0373ceda8ff1488fe1c73bf49a84554f33ff256cb16dc975c391b79b4f8f/bs2json-0.3.0.tar.gz", hash = "sha256:ec789741f8ef836e07a0881e713aa8f02384f6912ef6f9d53f35b6cfd64e8b67", size = 14401, upload-time = "2026-03-17T17:49:35.491Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/3d/197ae883f866e6c170e475025a9ebd05a6008ce3b8b414e2cb262fcebe95/bs2json-0.3.0-py3-none-any.whl", hash = "sha256:02c219c7fe7d2ac4b81486fed01c60c51942b6bf7c9c38a768e12f64db142b42", size = 10335, upload-time = "2026-03-17T17:49:34.379Z" },
-]
-
-[[package]]
 name = "cape-parsers"
 version = "0.1.69"
 source = { registry = "https://pypi.org/simple" }
@@ -135,10 +110,9 @@ wheels = [
 
 [[package]]
 name = "capesolo"
-version = "0.5.35"
+version = "0.5.36"
 source = { editable = "." }
 dependencies = [
-    { name = "bs2json" },
     { name = "cape-parsers" },
     { name = "cryptography" },
     { name = "distorm3s" },
@@ -169,7 +143,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bs2json", specifier = ">=0.3.0" },
     { name = "cape-parsers", specifier = ">=0.1.68" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "distorm3s", specifier = "==3.5.5" },
@@ -480,7 +453,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1576,15 +1549,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
-]
-
-[[package]]
-name = "soupsieve"
-version = "2.9.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d9/38/e12680bbe6b4f8f3d17adcaf38d26850aa756c85cf4a80e79fc12a018fe8/soupsieve-2.9.1.tar.gz", hash = "sha256:c33e6605bbc71dd628b00c632d58ae607c22bade247e52553928f83bbb75b4ba", size = 122261, upload-time = "2026-07-21T16:57:17.452Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/2c/437fe806897c2d6cfdc3ee43a18da8bf8e568530a4ae9bac781541ca9896/soupsieve-2.9.1-py3-none-any.whl", hash = "sha256:4f4477399246b7a0c720a88ca2454b11cd6bb9ae4c9d170140786e916776c14c", size = 37404, upload-time = "2026-07-21T16:57:16.421Z" },
 ]
 
 [[package]]
