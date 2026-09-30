@@ -73,16 +73,19 @@ class StringsPanel(wx.Panel, KeyEventHandlerMixin):
             )
             return
 
-        stringsData = self.GetStrings(path)
-        if not stringsData:
-            self.notice.Present(
-                title="No strings",
-                detail=f"{filename} contains no strings of 4 characters or more.",
-            )
-            return
+        def render(stringsData):
+            if not stringsData:
+                self.notice.Present(
+                    title="No strings",
+                    detail=f"{filename} contains no strings of 4 characters or more.",
+                )
+                return
 
-        self.notice.Dismiss()
-        self.resultsWindow.SetValue(stringsData)
+            self.notice.Dismiss()
+            self.resultsWindow.SetValue(stringsData)
+
+        # Extraction reads and scans the whole file: off the GUI thread.
+        self.GetTopLevelParent().RunSteps([("strings", lambda: self.GetStrings(path), render)])
 
     def GetStrings(self, filePath, minLength=4):
         extracted = extract_strings(filePath, dedup=True, minchars=minLength)

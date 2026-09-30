@@ -98,8 +98,6 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
     def OnViewButtonClick(self, event):
         selectedFile = self.logFileDropdown.GetValue()
         self.LoadDebuggerResults(selectedFile)
-        self.loadedLog = selectedFile
-        self.coverBtn.Enable()
 
     def LoadDebuggerResults(self, file_name):
         path = Path(self.analysisDir, "debugger") / file_name
@@ -110,8 +108,15 @@ class DebuggerPanel(wx.Panel, KeyEventHandlerMixin):
                 kind=ui.ERROR,
             )
             return
-        self.notice.Dismiss()
-        self.resultsWindow.SetValue(path.read_text())
+
+        def render(text):
+            self.notice.Dismiss()
+            self.resultsWindow.SetValue(text)
+            self.loadedLog = file_name
+            self.coverBtn.Enable()
+
+        # A trace log can be large: read it off the GUI thread.
+        self.GetTopLevelParent().RunSteps([("debugger log", path.read_text, render)])
 
     def ParseModules(self, analysisData, pid):
         """(rank, base, size, name) per capemon load line in analysis.log, best first."""

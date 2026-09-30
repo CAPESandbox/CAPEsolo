@@ -153,31 +153,36 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
             self.jsLogButton.Disable()
 
     def ProcessJsLog(self, event=None):
-        # A busy cursor rather than a progress dialog, matching BehaviorPanel and PayloadsPanel:
-        # parsing is a single pass with nothing to report part way. event defaults to None so the
-        # auto-process step can call this directly.
-        with wx.BusyCursor():
+        self.GetTopLevelParent().RunSteps([self.JsLogStep()])
+
+    def JsLogStep(self):
+        """The JS log as a (label, compute, render) step: parsing, stream reassembly and
+        writing the reconstructed files run on the processing worker; the grid, and pushing
+        those files into the Payloads and Yara tabs, on the GUI thread."""
+
+        def compute():
             jslog = JsLog(self.analysisDir)
-            self.results["js_log"] = jslog
             conversations, drops = AssembleConversations(jslog, self.analysisDir)
             dnsRows = AssembleDns(jslog)
             newPaths = DropExtractedFiles(self.analysisDir, drops)
+            rows = conversations + self._BuildHttpRows(jslog) + dnsRows + self._BuildEventRows(jslog)
+            return jslog, conversations, dnsRows, newPaths, rows
+
+        def render(data):
+            jslog, conversations, dnsRows, newPaths, rows = data
+            self.results["js_log"] = jslog
             self._LiveAppendPayloads(newPaths)
-            self.allRows = (
-                conversations
-                + self._BuildHttpRows(jslog)
-                + dnsRows
-                + self._BuildEventRows(jslog)
-            )
+            self.allRows = rows
             self.LoadKindFilter()
             self.pagination_sizer.ShowItems(True)
             self.current_page = 1
             self.AddTableData()
             self.grid.Show()
             self.jsLogButton.Disable()
+            self.resultsWindow.SetValue(self.Summarize(jslog, conversations, dnsRows, newPaths))
+            self.jsLogComplete = True
 
-        self.resultsWindow.SetValue(self.Summarize(jslog, conversations, dnsRows, newPaths))
-        self.jsLogComplete = True
+        return ("js log", compute, render)
 
     def _LiveAppendPayloads(self, newPaths):
         # Push reconstructed drops into the Payloads and Yara tabs if they are already loaded; both

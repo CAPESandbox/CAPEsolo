@@ -340,7 +340,7 @@
 
         {# Embed calls JSON so JS can always parse it reliably #}
         <script type="application/json" id="calls_json_{{ process.process_id }}">
-{{ process.calls | tojson }}
+{{ process.calls | strip_raw_values | tojson }}
         </script>
 
         <div class="row mb-3">

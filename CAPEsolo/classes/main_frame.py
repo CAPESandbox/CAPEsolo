@@ -1,5 +1,7 @@
 import configparser
+import logging
 import os
+import threading
 from contextlib import suppress
 from pathlib import Path
 
@@ -24,6 +26,8 @@ from .target_info import TargetInfoPanel
 from .theme import SP_XS, BG_MAIN, ToggleTheme, apply_theme, dip, is_dark
 from .theme import _init as _init_theme
 from .yara_panel import YaraPanel
+
+log = logging.getLogger(__name__)
 
 
 class ConfigObject:
@@ -80,6 +84,8 @@ class MainFrame(wx.Frame):
         # none of which reach the tab borders. Simplebook keeps the AddPage/GetPage API and
         # stays the pages' parent, so the panels that read analysisDir and friends off
         # GetParent() are unaffected.
+        # Set before any page exists: StartPanel reads it when it builds its action bar.
+        self.processing = False
         self.notebook = wx.Simplebook(self.panel)
         self.notebook.analysisDir = self.analysisDir
         self.notebook.results = {}
@@ -89,26 +95,7 @@ class MainFrame(wx.Frame):
         self.notebook.capesoloRoot = self.capesoloRoot
         self.startTab = StartPanel(self.notebook)
         self.notebook.AddPage(self.startTab, "Start")
-        self.infoTab = TargetInfoPanel(self.notebook)
-        self.notebook.AddPage(self.infoTab, "Info")
-        self.behaviorTab = BehaviorPanel(self.notebook)
-        self.notebook.AddPage(self.behaviorTab, "Behavior")
-        self.signaturesTab = SignaturesPanel(self.notebook)
-        self.notebook.AddPage(self.signaturesTab, "Signatures")
-        self.payloadsTab = PayloadsPanel(self.notebook)
-        self.notebook.AddPage(self.payloadsTab, "Payloads")
-        self.yaraTab = YaraPanel(self.notebook)
-        self.notebook.AddPage(self.yaraTab, "Yara")
-        self.configsTab = ConfigsPanel(self.notebook)
-        self.notebook.AddPage(self.configsTab, "Configs")
-        self.stringsTab = StringsPanel(self.notebook)
-        self.notebook.AddPage(self.stringsTab, "Strings")
-        self.debuggerTab = DebuggerPanel(self.notebook)
-        self.notebook.AddPage(self.debuggerTab, "Debugger")
-        self.jsConsoleTab = JsConsolePanel(self.notebook)
-        self.notebook.AddPage(self.jsConsoleTab, "JS Log")
-        self.networkTab = NetworkPanel(self.notebook)
-        self.notebook.AddPage(self.networkTab, "Network")
+        self._BuildResultPages()
         self.notebook.SetSelection(0)
         # Simplebook is a wxBookCtrl, so it reports page changes as a book event rather
         # than the notebook-specific one FlatNotebook sent.
@@ -174,6 +161,57 @@ class MainFrame(wx.Frame):
         # page background behind the tab strip, not a card.
         self.panel.SetBackgroundColour(BG_MAIN)
 
+    def _BuildResultPages(self):
+        """Every page after Start. Shared by InitUi and ResetResults so the two cannot drift."""
+        self.infoTab = TargetInfoPanel(self.notebook)
+        self.notebook.AddPage(self.infoTab, "Info")
+        self.behaviorTab = BehaviorPanel(self.notebook)
+        self.notebook.AddPage(self.behaviorTab, "Behavior")
+        self.signaturesTab = SignaturesPanel(self.notebook)
+        self.notebook.AddPage(self.signaturesTab, "Signatures")
+        self.payloadsTab = PayloadsPanel(self.notebook)
+        self.notebook.AddPage(self.payloadsTab, "Payloads")
+        self.yaraTab = YaraPanel(self.notebook)
+        self.notebook.AddPage(self.yaraTab, "Yara")
+        self.configsTab = ConfigsPanel(self.notebook)
+        self.notebook.AddPage(self.configsTab, "Configs")
+        self.stringsTab = StringsPanel(self.notebook)
+        self.notebook.AddPage(self.stringsTab, "Strings")
+        self.debuggerTab = DebuggerPanel(self.notebook)
+        self.notebook.AddPage(self.debuggerTab, "Debugger")
+        self.jsConsoleTab = JsConsolePanel(self.notebook)
+        self.notebook.AddPage(self.jsConsoleTab, "JS Log")
+        self.networkTab = NetworkPanel(self.notebook)
+        self.notebook.AddPage(self.networkTab, "Network")
+
+    def ResetResults(self):
+        """Replace every result page, and the state they share, with fresh ones.
+
+        Nothing cleared the completion flags, grids or shared results before, so a second
+        Launch (or a static pass followed by a dynamic one) mixed the two analyses and skipped
+        the tabs already marked processed. Rebuilding the pages rather than resetting each
+        in place means no panel needs a Reset() kept in step with its own state. The new
+        shared objects exist before the pages do, since each panel copies its references
+        (results, configHits, yara) at construction.
+        """
+        self.Freeze()
+        try:
+            # ChangeSelection, not SetSelection: no page-changed event for a page about to go.
+            self.notebook.ChangeSelection(0)
+            while self.notebook.GetPageCount() > 1:
+                self.notebook.DeletePage(1)
+            self.notebook.results = {}
+            self.notebook.configHits = []
+            self.notebook.yara = ProcessYara(self.analysisDir)
+            self._BuildResultPages()
+            for index in range(1, self.notebook.GetPageCount()):
+                apply_theme(self.notebook.GetPage(index))
+            self.startTab._reportCache = None
+        finally:
+            self.Thaw()
+        self.tabBar.Refresh()
+        self.panel.Layout()
+
     def ThemeLabel(self):
         return "Theme: Dark" if is_dark() else "Theme: Light"
 
@@ -217,9 +255,79 @@ class MainFrame(wx.Frame):
         self.Layout()
         self.Refresh()
 
+    def RunSteps(self, steps, onDone=None):
+        """Run processing on a worker thread so the window stays responsive.
+
+        *steps* is an iterable of (label, compute, render), consumed on the worker - so a
+        generator can decide a later step from what an earlier one produced, as the
+        auto-process chain does. compute() does the work and must not touch wx; render(result)
+        updates the widgets on the GUI thread, and the worker waits for it, so every step still
+        sees what the previous ones published, in the same order as when all of it ran on the
+        GUI thread. Either may be None. A step that raises is logged and the rest still run;
+        onDone(failed) then gets the labels that failed.
+
+        One job at a time, because the steps share notebook.results and the pages: while one
+        runs this returns False and does nothing.
+        """
+        if self.processing:
+            self.statusBar.SetMessage("Busy - wait for the current processing to finish")
+            return False
+        self.SetProcessing(True)
+        threading.Thread(target=self._RunSteps, args=(steps, onDone), daemon=True).start()
+        return True
+
+    def _RunSteps(self, steps, onDone):
+        failed = []
+        try:
+            for label, compute, render in steps:
+                wx.CallAfter(self._SetStatus, f"Processing {label}...")
+                try:
+                    result = compute() if compute else None
+                    if render:
+                        ui.on_gui(render, result)
+                except Exception:
+                    log.exception("Processing %s failed", label)
+                    failed.append(label)
+        except Exception:
+            # The step generator itself raised: nothing after it can be planned.
+            log.exception("Processing failed")
+            failed.append("processing")
+        wx.CallAfter(self._StepsDone, failed, onDone)
+
+    def _SetStatus(self, message):
+        if self:
+            self.statusBar.SetMessage(message)
+
+    def _StepsDone(self, failed, onDone):
+        if not self:
+            return
+        self.SetProcessing(False)
+        if onDone:
+            onDone(failed)
+        elif failed:
+            self.statusBar.SetMessage(f"Processing failed: {', '.join(failed)} (see log)")
+        else:
+            self.statusBar.SetMessage("Processing complete")
+
+    def SetProcessing(self, processing):
+        self.processing = processing
+        self.startTab.UpdateAnalysisControls()
+        if not processing:
+            # Page changes skip their loads and button updates while a job runs; catch the
+            # page on screen up once the job's onDone has had its turn (it may start another).
+            wx.CallAfter(self._RefreshCurrentPage)
+
+    def _RefreshCurrentPage(self):
+        if self and not self.processing:
+            self.RefreshPage(self.notebook.GetCurrentPage())
+
     def OnNotebookPageChanged(self, event):
-        newSelection = event.GetSelection()
-        selectedPage = self.notebook.GetPage(newSelection)
+        # A running job fills the pages itself; loading one here as well would do it twice.
+        if not self.processing:
+            self.RefreshPage(self.notebook.GetPage(event.GetSelection()))
+        event.Skip()
+
+    def RefreshPage(self, selectedPage):
         if selectedPage == self.behaviorTab or selectedPage == self.signaturesTab:
             selectedPage.UpdateGenerateButtonState()
         elif selectedPage == self.infoTab:
@@ -236,8 +344,6 @@ class MainFrame(wx.Frame):
             selectedPage.PopulateLogFileDropdown()
         elif selectedPage == self.jsConsoleTab or selectedPage == self.networkTab:
             selectedPage.UpdateProcessButtonState()
-
-        event.Skip()
 
     def CreateAnalysisDirectory(self):
         with suppress(FileExistsError):

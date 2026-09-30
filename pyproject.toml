@@ -18,7 +18,6 @@ dependencies = [
     "gevent>=26.8.0",
     "dnspython>=2.8.0",
     "tldextract>=5.3.1",
-    "bs2json>=0.3.0",
     "cape-parsers>=0.1.68",
     "pytest>=9.0.3",
     "setuptools>=84.0.0",

@@ -12,8 +12,8 @@ import dns.resolver
 from tldextract import TLDExtract
 
 from CAPEsolo import signatures
-from CAPEsolo.signatures import community
 
+from . import cape_compat
 from .path_utils import path_exists
 from .url_validate import url as url_validator
 from .utils import create_folder
@@ -1047,14 +1047,30 @@ class RunSignatures:
         self.analysis_path = analysis_path
 
         import_package(signatures)
-        import_package(community)
+        # Community (CAPEv2) signatures are not shipped: the user's own folder beside cfg.ini.
+        # One there replaces a shipped signature of the same name, so a copy of upstream's set
+        # does not report every shared match twice; likewise the user's own files beat the
+        # community subfolder Update fills.
+        userClasses = cape_compat.load_user_signatures()
+        userNames = {cls.name for cls in userClasses}
+        ownNames = {cls.name for cls in userClasses if not cls.__module__.startswith(cape_compat.COMMUNITY_PACKAGE)}
 
         # Gather all enabled & up-to-date Signatures.
         self.signatures = []
-        for signature in list_plugins(group="signatures"):
-            if self._should_load_signature(signature):
-                # Initialize them all
-                self.signatures.append(signature(self.results))
+        # Under the view too: CAPEv2 signatures read results["info"] and the like in __init__.
+        with cape_compat.SignatureView(self.results, self.analysis_path):
+            for signature in list_plugins(group="signatures"):
+                if signature.name in userNames and not signature.__module__.startswith(cape_compat.USER_PACKAGE + "."):
+                    continue
+                if signature.name in ownNames and signature.__module__.startswith(cape_compat.COMMUNITY_PACKAGE):
+                    continue
+                if self._should_load_signature(signature):
+                    # Initialize them all. One at a time: a user signature that raises here
+                    # must not take the whole pass down with it.
+                    try:
+                        self.signatures.append(signature(self.results))
+                    except Exception as e:
+                        log.warning("Skipping signature %s: failed to initialise: %s", signature.name, e)
 
         self.evented_list = []
         self.non_evented_list = []
@@ -1076,7 +1092,7 @@ class RunSignatures:
         except Exception as e:
             print(e)
 
-        # Cache of signatures to call per API name.
+        # Cache of signatures to call per (process name, API name, category).
         self.api_sigs = {}
 
         # Prebuild a list of signatures that *may* be interested
@@ -1144,6 +1160,11 @@ class RunSignatures:
         return None
 
     def run(self, test_signature: str = False):
+        # CAPEv2's result shapes for the pass only; see cape_compat.SignatureView.
+        with cape_compat.SignatureView(self.results, self.analysis_path):
+            return self._run(test_signature)
+
+    def _run(self, test_signature: str = False):
         """Run evented signatures.
         test_signature: signature name, Ex: cape_detected_threat, to test unique signature
         """
@@ -1174,6 +1195,7 @@ class RunSignatures:
 
             # Iterate calls and tell interested signatures about them.
             evented_set = set(self.evented_list)
+            always = evented_set.intersection(self.call_always)
             for proc in self.results["behavior"]["processes"]:
                 process_name = proc["process_name"]
                 process_id = proc["process_id"]
@@ -1188,17 +1210,23 @@ class RunSignatures:
                     api = call.get("api")
                     # Build interested signatures
                     cat = call.get("category")
-                    call_sigs = sigs.intersection(
-                        self.call_for_api.get(api, set()).union(
-                            self.call_for_api.get("any", set())
+                    # The set only depends on these three, so it is built once per combination
+                    # rather than once per call; nothing below mutates it.
+                    key = (process_name, api, cat)
+                    call_sigs = self.api_sigs.get(key)
+                    if call_sigs is None:
+                        call_sigs = sigs.intersection(
+                            self.call_for_api.get(api, set()).union(
+                                self.call_for_api.get("any", set())
+                            )
                         )
-                    )
-                    call_sigs = call_sigs.intersection(
-                        self.call_for_cat.get(cat, set()).union(
-                            self.call_for_cat.get("any", set())
+                        call_sigs = call_sigs.intersection(
+                            self.call_for_cat.get(cat, set()).union(
+                                self.call_for_cat.get("any", set())
+                            )
                         )
-                    )
-                    call_sigs.update(evented_set.intersection(self.call_always))
+                        call_sigs.update(always)
+                        self.api_sigs[key] = call_sigs
 
                     for sig in call_sigs:
                         # Setting signature attributes per call

@@ -181,40 +181,46 @@ class NetworkPanel(wx.Panel, KeyEventHandlerMixin):
             )
             return
 
-        # A busy cursor rather than a progress dialog, matching the other panels: the walk
-        # is a single pass with nothing meaningful to report part way through.
-        try:
-            with wx.BusyCursor():
-                self.results = NetworkData(self.analysisDir, pcap)
-                # Stream reassembly and decryption is the slow half, so it runs under the
-                # same cursor. A failure here must not lose the metadata already parsed.
-                try:
-                    self.decrypted = DecryptStreams(self.analysisDir, pcap)
-                except Exception as e:
-                    self.decrypted = {"error": str(e)}
-        except Exception as e:
-            ui.message(
-                f"Failed to process the capture:\n{e}", "Error", wx.OK | wx.ICON_ERROR
+        def compute():
+            results = NetworkData(self.analysisDir, pcap)
+            # Stream reassembly and decryption is the slow half. A failure here must not lose
+            # the metadata already parsed.
+            try:
+                decrypted = DecryptStreams(self.analysisDir, pcap)
+            except Exception as e:
+                decrypted = {"error": str(e)}
+            rows = (
+                StreamRows(decrypted, FormatTime)
+                + list(results.get("events", []))
+                + list(results.get("flows", []))
             )
-            return
+            rows.sort(key=lambda row: (row.get("time") or 0.0))
+            return results, decrypted, rows
 
-        self.rows = (
-            StreamRows(self.decrypted, FormatTime)
-            + list(self.results.get("events", []))
-            + list(self.results.get("flows", []))
-        )
-        self.rows.sort(key=lambda row: (row.get("time") or 0.0))
-        self.LoadKindFilter()
-        if not self.splitter.IsSplit():
-            self.grid.Show()
-            self.resultsWindow.Show()
-            # The state was holding the unsplit pane; splitting replaces it, so it only
-            # has to stop being a child of the splitter's layout.
-            self.notice.Hide()
-            height = self.splitter.GetClientSize().height
-            sash = int(height * 0.6) if height > 200 else 300
-            self.splitter.SplitHorizontally(self.grid, self.resultsWindow, sash)
-        self.AddTableData()
+        def render(data):
+            self.results, self.decrypted, self.rows = data
+            self.LoadKindFilter()
+            if not self.splitter.IsSplit():
+                self.grid.Show()
+                self.resultsWindow.Show()
+                # The state was holding the unsplit pane; splitting replaces it, so it only
+                # has to stop being a child of the splitter's layout.
+                self.notice.Hide()
+                height = self.splitter.GetClientSize().height
+                sash = int(height * 0.6) if height > 200 else 300
+                self.splitter.SplitHorizontally(self.grid, self.resultsWindow, sash)
+            self.AddTableData()
+
+        def done(failed):
+            if failed:
+                ui.message(
+                    "Failed to process the capture - see the analysis log.",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR,
+                )
+
+        # Parsing and decrypting a capture takes a while: off the GUI thread.
+        self.GetTopLevelParent().RunSteps([("capture", compute, render)], onDone=done)
 
     def LoadKindFilter(self, selected=ALL_KINDS):
         counts = {}

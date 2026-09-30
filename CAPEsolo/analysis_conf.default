@@ -9,22 +9,18 @@ file_type =
 exports =
 amsi = True
 browser = True
-curtain = True
 digisig = True
 disguise = True
 evtx = False
-human_windows = False
 ; Imports the module; JsConsole then starts only for JS runtimes (package = nodejs, bun, deno)
 js_console = True
 procmon = False
 recentfiles = False
-screenshots_windows = False
 ; TLS secrets for decrypting a capture taken outside the guest, read by the Network tab.
 ; tlsdump injects capemon into lsass for Schannel; sslkeylogfile covers anything honouring
 ; the SSLKEYLOGFILE variable. The analyzer only imports an auxiliary module whose name it
 ; finds here, so sslkeylogfile never loaded while this key was absent.
 sslkeylogfile = True
-sysmon_windows = False
 tlsdump = True
 usage = False
 file_pickup = True

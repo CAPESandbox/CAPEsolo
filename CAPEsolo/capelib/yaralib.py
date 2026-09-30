@@ -4,9 +4,13 @@ import os
 
 import yara
 
+from .config_paths import user_config_path
 from .path_utils import path_exists
 
 log = logging.getLogger(__name__)
+
+# The last compiled CAPE ruleset, shared by every YaraProcessor; see init_yara.
+_compiled = {}
 
 
 class YaraProcessor(object):
@@ -121,69 +125,88 @@ class YaraProcessor(object):
 
     def init_yara(self):
         log.debug("Initializing Yara...")
-        categories = [
-            name
-            for name in os.listdir(self.yara_root)
-            if os.path.isdir(os.path.join(self.yara_root, name))
-        ]
+        # Only the CAPE category is ever scanned (get_yara), so it is the only one compiled.
+        # Community rules are not shipped: the user's own folder beside cfg.ini joins the CAPE
+        # rules, as CAPEv2 installs community rules into the same directory. A file name already
+        # taken is skipped, the way a copy into one directory would replace it: Desktop\custom
+        # beats the user folder beats its community subfolder beats the packaged rules. Each source gets its own key prefix,
+        # since add_rules numbers from 0 and a shared prefix let the custom rules overwrite the
+        # first CAPE ones.
+        category = "CAPE"
+        category_root = os.path.join(self.yara_root, category)
+        if not path_exists(category_root):
+            log.warning("Missing Yara directory: %s?", category_root)
 
-        # Loop through all categories.
-        for category in categories:
-            rules, indexed = {}, []
-            # Check if there is a directory for the given category.
-            category_root = os.path.join(self.yara_root, category)
-            if not path_exists(category_root):
-                log.warning("Missing Yara directory: %s?", category_root)
-                continue
+        rules, indexed = {}, []
+        for directory, prefix in (
+            (self.yara_custom, "custom"),
+            (str(user_config_path().parent / "yara"), "user"),
+            # Where Update Yara puts the community rules, replaced as a unit; the user's own
+            # files one level up are never touched by it and win over it.
+            (str(user_config_path().parent / "yara" / "community"), "community"),
+            (category_root, category),
+        ):
+            found, _ = self.add_rules(directory, prefix)
+            for key, filepath in found.items():
+                if os.path.basename(filepath) not in indexed:
+                    rules[key] = filepath
+                    indexed.append(os.path.basename(filepath))
 
-            std_rules, std_indexed = self.add_rules(category_root, category)
-            rules.update(std_rules)
-            indexed.extend(std_indexed)
+        # Compiling takes seconds and every ProcessYara/GetResults used to repeat it; the rule
+        # files and their mtimes key the cache, so a rule staged or updated mid-session still
+        # triggers a recompile.
+        cacheKey = tuple(sorted((path, os.path.getmtime(path)) for path in rules.values()))
+        if cacheKey in _compiled:
+            self.yara_rules[category] = _compiled[cacheKey]
+            return
 
-            if category == "CAPE" and path_exists(self.yara_custom):
-                custom_rules, custom_indexed = self.add_rules(self.yara_custom, category)
-                rules.update(custom_rules)
-                indexed.extend(custom_indexed)
+        # Need to define each external variable that will be used in the
+        # future. Otherwise, Yara will complain.
+        externals = {"filename": ""}
 
-            # Need to define each external variable that will be used in the
-            # future. Otherwise, Yara will complain.
-            externals = {"filename": ""}
-
-            while True:
-                try:
-                    self.yara_rules[category] = yara.compile(
-                        filepaths=rules, externals=externals
-                    )
+        while True:
+            try:
+                self.yara_rules[category] = yara.compile(
+                    filepaths=rules, externals=externals
+                )
+                _compiled.clear()
+                _compiled[cacheKey] = self.yara_rules[category]
+                break
+            except yara.Error as e:
+                # A SyntaxError names its file. Anything else does not - a file antivirus will
+                # not let us read (EINVAL, as a flagged Macoute.yar did on a Defender host), a
+                # missing module - and used to end here with no CAPE rules at all. Either way,
+                # drop what fails and compile the rest rather than lose every rule to one file.
+                bad_rule = f"{str(e).split('.yar', 1)[0]}.yar" if isinstance(e, yara.SyntaxError) else ""
+                failing = [k for k, v in rules.items() if v == bad_rule] or self._failing_rules(rules, externals)
+                if not failing:
+                    log.error("There was an error in one or more Yara rules: %s", e)
                     break
-                except yara.SyntaxError as e:
-                    bad_rule = f"{str(e).split('.yar', 1)[0]}.yar"
-                    log.debug(
-                        "Trying to disable rule: %s. Can't compile it. Ensure that your YARA is properly installed.",
-                        bad_rule,
-                    )
-                    if os.path.basename(bad_rule) not in indexed:
-                        break
-                    for k, v in rules.items():
-                        if v == bad_rule:
-                            del rules[k]
-                            indexed.remove(os.path.basename(bad_rule))
-                            log.error(
-                                "Can't compile YARA rule: %s. Maybe is bad yara but can be missing YARA's module.",
-                                bad_rule,
-                            )
-                            break
-                except yara.Error as e:
+                for key in failing:
                     log.error(
-                        "There was a syntax error in one or more Yara rules: %s", e
+                        "Can't compile YARA rule: %s. Maybe is bad yara but can be missing YARA's module.",
+                        rules[key],
                     )
-                    break
+                    indexed.remove(os.path.basename(rules[key]))
+                    del rules[key]
 
-            indexed = sorted(indexed)
-            for entry in indexed:
-                if entry == indexed[-1]:
-                    log.debug("\t `-- %s %s", category, entry)
-                else:
-                    log.debug("\t |-- %s %s", category, entry)
+        indexed = sorted(indexed)
+        for entry in indexed:
+            if entry == indexed[-1]:
+                log.debug("\t `-- %s %s", category, entry)
+            else:
+                log.debug("\t |-- %s %s", category, entry)
+
+    def _failing_rules(self, rules, externals):
+        """Keys of the rule files that do not compile on their own."""
+        failing = []
+        for key, path in rules.items():
+            try:
+                yara.compile(filepath=path, externals=externals)
+            except yara.Error as e:
+                log.debug("YARA rule %s does not compile: %s", path, e)
+                failing.append(key)
+        return failing
 
     def get_yara(self, file_path, category="CAPE", externals=None):
         """Get Yara signatures matches.

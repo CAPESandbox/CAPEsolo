@@ -138,9 +138,9 @@ def run():
 
     # -- button events still reach their handlers ----------------------------
     fired = []
-    start.jsonReportBtn.Enable(True)
-    start.jsonReportBtn.Bind(wx.EVT_BUTTON, lambda event: fired.append(True))
-    start.jsonReportBtn._Fire()
+    start.reportsBtn.Enable(True)
+    start.reportsBtn.Bind(wx.EVT_BUTTON, lambda event: fired.append(True))
+    start.reportsBtn._Fire()
     check("button emits EVT_BUTTON", fired == [True])
 
     # -- theme switch --------------------------------------------------------

@@ -13,6 +13,7 @@ from CAPEsolo.capelib.utils import (
     parentfixup,
     proctreetolist,
     str2list,
+    strip_raw_values,
 )
 
 try:
@@ -62,6 +63,7 @@ class ReportHTML:
                 "malware_config": malware_config,
                 "datefmt": datefmt,
                 "proctreetolist": proctreetolist,
+                "strip_raw_values": strip_raw_values,
             }
         )
         # Only surface the Network tab when the summary actually has content; results["network"]

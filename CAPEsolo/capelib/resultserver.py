@@ -78,13 +78,10 @@ RESULT_UPLOADABLE = (
     # be listed individually - the check is an exact match on the directory, not a prefix - so
     # without this the TLS secrets were refused and the client disconnected.
     b"aux_/sslkeylogfile",
-    b"curtain",
     b"debugger",
     b"tlsdump",
     b"files",
     b"procdump",
-    b"shots",
-    b"sysmon",
     b"evtx",
     b"htmldump",
 )
@@ -460,13 +457,10 @@ class FileUpload(ProtocolHandler):
         STATS.record(complete, capped)
 
         # ToDo we need Windows path
-        # filter screens/curtain/sysmon
+        # keep aux, debugger, tlsdump, evtx and htmldump uploads out of files.json
         if not dump_path.startswith(
             (
-                b"shots/",
-                b"curtain/",
                 b"aux_/",
-                b"sysmon/",
                 b"debugger/",
                 b"tlsdump/",
                 b"evtx",

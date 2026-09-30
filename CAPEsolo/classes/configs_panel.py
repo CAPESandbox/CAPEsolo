@@ -322,38 +322,52 @@ class ConfigsPanel(wx.Panel, KeyEventHandlerMixin):
         self.notice.Present()
 
     def ExtractConfigs(self, event):
-        entries = []
-        # Persists across rounds so a hit parsed in an earlier round is not parsed again.
-        processed = set()
-        pending = list(self.configHits)
-        # A dumped payload can itself yield a config that dumps more files. Terminates
-        # because the writes are content addressed -- DumpParserFiles skips an existing
-        # blob and never re-queues it -- and *processed* bounds the parser runs.
-        configs = []
-        while pending:
-            newPayloads = []
-            entries += Extract(pending, self.analysisDir, newPayloads=newPayloads,
-                               seen=processed, collect=configs)
-            if not newPayloads:
-                break
-            mark = len(self.configHits)
-            # Yara scans each new payload and appends its CAPE names to self.configHits.
-            self.UpdatePayloadPanels(newPayloads)
-            pending = self.configHits[mark:]
+        self.GetMainFrame().RunSteps([self.ConfigsStep()])
 
-        # Shown before the rows go in, so the Layout that AddTableData ends with is the one
-        # that sizes it, matching SignaturesPanel.
-        # Published for the Signatures tab: the same {path: cfg} list json_report builds,
-        # plus the families those configs came from (results["detections"] in the report).
-        self.results["configs"] = configs
-        self.results["detections"] = sorted({
-            entry["family"] for entry in entries if entry.get("fields") and entry.get("family")
-        })
+    def ConfigsStep(self):
+        """Config extraction as a (label, compute, render) step. The parsers run on the
+        processing worker; each round's dumped payloads go to the Payloads and Yara tabs on
+        the GUI thread (which waits), since those tabs render them and Yara's scan of them
+        is what queues the next round."""
 
-        self.grid.Show()
-        self.AddTableData(entries)
-        self.configsButton.Disable()
-        self.configsComplete = True
+        def compute():
+            entries = []
+            # Persists across rounds so a hit parsed in an earlier round is not parsed again.
+            processed = set()
+            pending = list(self.configHits)
+            # A dumped payload can itself yield a config that dumps more files. Terminates
+            # because the writes are content addressed -- DumpParserFiles skips an existing
+            # blob and never re-queues it -- and *processed* bounds the parser runs.
+            configs = []
+            while pending:
+                newPayloads = []
+                entries += Extract(pending, self.analysisDir, newPayloads=newPayloads,
+                                   seen=processed, collect=configs)
+                if not newPayloads:
+                    break
+                mark = len(self.configHits)
+                # Yara scans each new payload and appends its CAPE names to self.configHits.
+                ui.on_gui(self.UpdatePayloadPanels, newPayloads)
+                pending = self.configHits[mark:]
+            return entries, configs
+
+        def render(data):
+            entries, configs = data
+            # Published for the Signatures tab: the same {path: cfg} list json_report builds,
+            # plus the families those configs came from (results["detections"] in the report).
+            self.results["configs"] = configs
+            self.results["detections"] = sorted({
+                entry["family"] for entry in entries if entry.get("fields") and entry.get("family")
+            })
+
+            # Shown before the rows go in, so the Layout that AddTableData ends with is the one
+            # that sizes it, matching SignaturesPanel.
+            self.grid.Show()
+            self.AddTableData(entries)
+            self.configsButton.Disable()
+            self.configsComplete = True
+
+        return ("configs", compute, render)
 
     def ClearGrid(self):
         self.grid.ClearGrid()

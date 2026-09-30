@@ -26,6 +26,11 @@ from .vt_helper import (
 )
 
 
+
+def FileInfo(path):
+    """File(path).get_all() for one payload - hashing it whole, so run it off the GUI thread."""
+    return File(str(path)).get_all()[0]
+
 class PayloadsPanel(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -79,14 +84,16 @@ class PayloadsPanel(wx.Panel):
         grid.SetCellValue(current_row, 0, "" if value0 is None else str(value0))
         grid.SetCellValue(current_row, 1, "" if value1 is None else str(value1))
 
-    def AddPayloadEntry(self, key, entry):
+    def AddPayloadEntry(self, key, entry, fileinfo=None):
+        """*fileinfo* is FileInfo(path) when the caller already computed it off the GUI thread."""
         cape_info = {}
         metadata = entry.get("metadata", "")
         if metadata:
             cape_info = metadata_processing(metadata, entry.get("pids"))
 
         path = Path(self.analysisDir) / key
-        fileinfo = File(str(path)).get_all()[0]
+        if fileinfo is None:
+            fileinfo = FileInfo(path)
         # Publish the same shape json_report.Payloads builds, from the work already done
         # here: the Signatures tab cannot run until payloads and configs exist, and this is
         # the tab that owns them.
@@ -192,7 +199,7 @@ class PayloadsPanel(wx.Panel):
     def AddPayload(self, relPath):
         """Add a payload a config parser produced after this panel was built.
 
-        LoadAndDisplayContent only ever runs once, so a file written during config
+        The payload list only ever loads once, so a file written during config
         extraction is appended on its own. If the tab was never opened there is nothing
         to append to: PayloadsReady will read it from files.json on first open.
         """
@@ -238,52 +245,46 @@ class PayloadsPanel(wx.Panel):
             self.panel.SetupScrolling(scroll_x=True, scroll_y=True, scrollToTop=False)
 
     def PayloadsReady(self):
-        if JsonPathExists(self.analysisDir):
-            self.jsonFileExists = True
-            # A busy cursor rather than the previous wx.ProgressDialog: that dialog was
-            # PD_APP_MODAL, so it took focus and, being destroyed during the notebook page
-            # change, left wx restoring focus to a window that was no longer valid - which
-            # is where the 'SetFocus' failed with error 0x00000057 messages came from. It
-            # also only ever reported 0% and 100%, so it showed no real progress, and the
-            # "error" path below returned without ever destroying it.
-            with wx.BusyCursor():
-                self.LoadAndDisplayContent()
+        step = self.PayloadsStep()
+        if step:
+            self.GetMainFrame().RunSteps([step])
 
-    def PublishPayload(self, path, entry, cape_info, fileinfo):
-        """Record one payload in the shared results dict, report-shaped."""
-        payload = dict(cape_info)
-        for name, value in fileinfo.items():
-            if name != "path" and value:
-                payload[name] = value
-        for flag in ("incomplete", "truncated"):
-            if entry.get(flag):
-                payload[flag] = True
-        self.results.setdefault("payloads", []).append({str(path): payload})
+    def PayloadsStep(self):
+        """The payload list as a (label, compute, render) step, or None when there is nothing
+        to load. Hashing every payload - the slow part - runs on the processing worker; the
+        per-payload grids are built on the GUI thread. Safe to build on the worker."""
+        if self.payloadsLoaded or not JsonPathExists(self.analysisDir):
+            return None
+        self.jsonFileExists = True
 
-    def LoadAndDisplayContent(self):
-        if self.payloadsLoaded or not self.jsonFileExists:
-            return
+        def compute():
+            data = LoadFilesJson(self.analysisDir)
+            if "error" in data:
+                return None
+            ordered = sorted(data.items(), key=lambda x: x[1]["size"], reverse=True)
+            return [
+                (key, value, FileInfo(Path(self.analysisDir) / key))
+                for key, value in ordered
+                if not key.startswith("aux_")
+            ]
 
-        # Rebuilt from scratch on a (re)load so a second pass cannot double the list.
-        self.results["payloads"] = []
+        def render(entries):
+            # Rebuilt from scratch on a (re)load so a second pass cannot double the list.
+            self.results["payloads"] = []
+            if entries is None:
+                return
+            for key, value, fileinfo in entries:
+                self.AddPayloadEntry(key, value, fileinfo)
 
-        data = LoadFilesJson(self.analysisDir)
-        if "error" in data:
-            return
-        else:
-            data = dict(sorted(data.items(), key=lambda x: x[1]["size"], reverse=True))
+            self.panel.Layout()
+            self.panel.Show()
+            self.Layout()
+            # Covers the Hex View / PE buttons and the panel background, which were also
+            # rendering in default system colours.
+            apply_theme(self)
+            self.payloadsLoaded = True
 
-        for key, value in data.items():
-            if not key.startswith("aux_"):
-                self.AddPayloadEntry(key, value)
-
-        self.panel.Layout()
-        self.panel.Show()
-        self.Layout()
-        # Covers the Hex View / PE buttons and the panel background, which were also
-        # rendering in default system colours.
-        apply_theme(self)
-        self.payloadsLoaded = True
+        return ("payloads", compute, render)
 
     def ApplyAlternateRowShading(self, grid):
         numRows = grid.GetNumberRows()

@@ -625,6 +625,17 @@ def str2list(value):
     return value
 
 
+def strip_raw_values(calls):
+    """A copy of calls without raw_value/raw_value_string, for the HTML report's embedded JSON:
+    nothing in the page reads them and a hex raw_value doubles every binary argument. A copy,
+    so the results dict (and report.json) keep them."""
+    drop = ("raw_value", "raw_value_string")
+    return [
+        {**call, "arguments": [{k: v for k, v in arg.items() if k not in drop} for arg in call.get("arguments", [])]}
+        for call in calls
+    ]
+
+
 def proctreetolist(tree):
     """
     Flatten a process tree into a list with special markers:

@@ -7,7 +7,6 @@ from CAPEsolo.capelib.yaralib import YaraProcessor
 class ProcessYara:
     def __init__(self, analysisDir):
         self.yara = YaraProcessor()
-        self.yara.init_yara()
         self.yara_results = []
         self.analysisDir = analysisDir
 

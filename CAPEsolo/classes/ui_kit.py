@@ -27,6 +27,8 @@ Conventions
 - The buttons emit wx.EVT_BUTTON with their own id, so existing Bind() calls are unchanged.
 """
 
+import threading
+
 import wx
 
 from .theme import (
@@ -2178,3 +2180,25 @@ def message(message, caption="Message", style=wx.OK | wx.CENTRE, parent=None):
     finally:
         dialog.Destroy()
 
+
+def on_gui(fn, *args):
+    """Call fn on the GUI thread from a worker thread, wait for it, and return its result (or
+    raise its exception). Called on the GUI thread itself, it just calls fn."""
+    if wx.IsMainThread():
+        return fn(*args)
+    done = threading.Event()
+    box = {}
+
+    def run():
+        try:
+            box["result"] = fn(*args)
+        except Exception as e:
+            box["error"] = e
+        finally:
+            done.set()
+
+    wx.CallAfter(run)
+    done.wait()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")

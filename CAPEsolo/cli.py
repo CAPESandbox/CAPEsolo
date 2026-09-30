@@ -32,7 +32,7 @@ from classes.main_frame import MainFrame
 from classes.splash_screen import SplashScreen
 from classes.theme import is_dark, native_dark_mode_allowed
 from lib.common.defines import KERNEL32
-from utils.update_yara import UpdateYara
+from utils.update_yara import Update
 
 log = logging.getLogger(__name__)
 for handler in log.handlers[:]:
@@ -230,7 +230,18 @@ def main():
         parser = argparse.ArgumentParser(description="Capesolo utility functions.")
         parser.add_argument(
             "--update_yara",
-            help="Update yara rules from CAPEv2 and community",
+            help=(
+                "Update yara rules. Optional comma-separated sources: capesolo, capev2, community "
+                "(default capesolo; capesolo wins over capev2 where both have a file)"
+            ),
+            nargs="?",
+            const="capesolo",
+            default=None,
+            metavar="SOURCES",
+        )
+        parser.add_argument(
+            "--update_signatures",
+            help="Download CAPESandbox/community signatures into the signatures folder beside cfg.ini",
             action="store_true",
         )
         parser.add_argument(
@@ -281,8 +292,10 @@ def main():
 
         args = parser.parse_args()
 
-        if args.update_yara:
-            _ = UpdateYara(Path(CAPESOLO_ROOT))
+        if args.update_yara or args.update_signatures:
+            sources = tuple(name.strip().lower() for name in (args.update_yara or "").split(",") if name.strip())
+            for what, count in Update(Path(CAPESOLO_ROOT), sources, args.update_signatures).items():
+                print(f"{what}: {count} files updated")
             return 0
 
         if args.headless_analyze:

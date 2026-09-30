@@ -46,7 +46,7 @@ from CAPEsolo.capelib.utils import LoadFilesJson
 from CAPEsolo.classes.html_report import ReportHTML
 from CAPEsolo.classes.json_report import GetResults, WriteJsonFile
 from CAPEsolo.lib.common.hashing import hash_file
-from CAPEsolo.utils.update_yara import UpdateYara
+from CAPEsolo.utils.update_yara import Update
 
 try:
     from mcp.server import MCPServer
@@ -1617,9 +1617,21 @@ if mcp:
 
 
     @mcp.tool()
-    def capesolo_update_yara() -> dict[str, Any]:
-        updated = UpdateYara(CAPESOLO_ROOT)
-        return {"updated": updated or {}}
+    def capesolo_update_yara(
+        capesolo: bool = True, capev2: bool = False, community: bool = False, community_signatures: bool = False
+    ) -> dict[str, Any]:
+        """Download YARA rules and community signatures, as the GUI's Update button does.
+
+        capesolo / capev2 rebuild the packaged rules (CAPE rules and capemon's monitor rules)
+        from the chosen repositories, CAPEsolo's copy winning where both have a file.
+        community downloads CAPESandbox/community's rules into the user's yara/community
+        folder beside cfg.ini; community_signatures its signatures into signatures/community
+        there. Nothing is replaced unless every download succeeds.
+        """
+        sources = tuple(name for name, picked in (("capesolo", capesolo), ("capev2", capev2), ("community", community)) if picked)
+        if not sources and not community_signatures:
+            return {"updated": {}}
+        return {"updated": Update(CAPESOLO_ROOT, sources, community_signatures) or {}}
 
 
     @mcp.tool()

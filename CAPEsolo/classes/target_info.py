@@ -18,6 +18,11 @@ from .vt_helper import (
 )
 
 
+
+def FileInfo(path):
+    """File(path).get_all() for one file - hashing it whole, so run it off the GUI thread."""
+    return File(str(path)).get_all()[0]
+
 class TargetInfoPanel(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -95,11 +100,14 @@ class TargetInfoPanel(wx.Panel):
         if rows:
             self.grid.DeleteRows(0, rows)
 
-    def PopulateGrid(self, path, is_target=False):
-        """Render file info for *path*. Nothing is written anywhere."""
+    def PopulateGrid(self, path, is_target=False, fileinfo=None):
+        """Render file info for *path*. Nothing is written anywhere.
+
+        *fileinfo* is FileInfo(path) when the caller already computed it off the GUI thread.
+        """
         self.ClearGrid()
-        fileObj = File(str(path))
-        fileinfo = fileObj.get_all()[0]
+        if fileinfo is None:
+            fileinfo = FileInfo(path)
         self.AddNewRow("Path", str(path))
         for key, value in fileinfo.items():
             if key not in "path" and value:
@@ -128,11 +136,23 @@ class TargetInfoPanel(wx.Panel):
         self.Layout()
 
     def LoadAndDisplayContent(self):
+        step = self.InfoStep()
+        if step:
+            self.GetMainFrame().RunSteps([step])
+
+    def InfoStep(self):
+        """The target's info as a (label, compute, render) step, or None if already shown.
+        Safe to build on the processing worker: it touches no widgets."""
         self.targetFile = self.parent.targetFile
         if self.infoLoaded or not self.targetFile:
-            return
-        self.PopulateGrid(self.targetFile, is_target=True)
-        self.infoLoaded = True
+            return None
+        target = self.targetFile
+
+        def render(fileinfo):
+            self.PopulateGrid(target, is_target=True, fileinfo=fileinfo)
+            self.infoLoaded = True
+
+        return ("info", lambda: FileInfo(target), render)
 
     def OnGetInfo(self, event):
         """Show info for the file selected on the Start tab, without touching it.
@@ -158,14 +178,19 @@ class TargetInfoPanel(wx.Panel):
             )
             return
 
-        try:
-            # get_all() hashes the whole file, so a large sample takes a moment.
-            with wx.BusyCursor():
-                self.PopulateGrid(path)
-        except Exception as e:
-            ui.message(
-                f"Failed to read file info: {e}", "Error", wx.OK | wx.ICON_ERROR
-            )
+        def done(failed):
+            if failed:
+                ui.message(
+                    f"Failed to read file info for {path} - see the analysis log.",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR,
+                )
+
+        # get_all() hashes the whole file, so a large sample takes a moment: off the GUI thread.
+        self.GetMainFrame().RunSteps(
+            [("file info", lambda: FileInfo(path), lambda fileinfo: self.PopulateGrid(path, fileinfo=fileinfo))],
+            onDone=done,
+        )
 
     def ApplyAlternateRowShading(self):
         numRows = self.grid.GetNumberRows()

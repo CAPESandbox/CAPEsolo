@@ -232,7 +232,7 @@ interrupted upload leaves a short file that the next `append=false` call overwri
 | `capesolo_list_payloads` | Payload artifacts from analysis output. |
 | `capesolo_list_dropped_files` | Dropped files under the analysis `files` output. |
 | `capesolo_list_debug_logs` | Debugger and analysis log artifacts. |
-| `capesolo_update_yara` | Update CAPE/community YARA rules. |
+| `capesolo_update_yara` | Update YARA rules and community signatures. `capesolo` (default true) and `capev2` rebuild the packaged rules, CAPEsolo winning on duplicates; `community` fills the user `yara/community` folder, `community_signatures` the user `signatures/community` folder. |
 
 ---
 

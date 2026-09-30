@@ -287,26 +287,45 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         else:
             self.behaviorButton.Disable()
 
+    def GetMainFrame(self):
+        parent = self.GetParent()
+        while parent and not isinstance(parent, wx.Frame):
+            parent = parent.GetParent()
+
+        return parent
+
     def GenerateBehavior(self, event):
-        # A busy cursor rather than a PD_APP_MODAL wx.ProgressDialog. The dialog had no
-        # try/finally, so a failure in behavior.run() left an app-modal window on screen
-        # that could never be dismissed. It also only ever reported 0% and 100%, so no
-        # real progress information is lost. Matches PayloadsPanel.PayloadsReady.
-        with wx.BusyCursor():
+        self.GetMainFrame().RunSteps([self.BehaviorStep()])
+
+    def BehaviorStep(self):
+        """Parse the behaviour logs as a (label, compute, render) step: the parse runs on the
+        processing worker, the tree and categories are built on the GUI thread."""
+
+        def compute():
             options = Options()
             options.analysis_call_limit = 0
             options.ram_boost = True
             behavior = BehaviorAnalysis()
             behavior.set_path(self.analysisDir)
             behavior.set_options(options)
-            self.results["behavior"] = behavior.run()
+            results = behavior.run()
+            # Plain lists, as json_report.BehaviorResults does: a ParseProcessLog shares one
+            # read pointer, and the signature pass (on the worker) and the process tree (on the
+            # GUI thread) can now walk the same process's calls at the same time.
+            for proc in results.get("processes", []):
+                proc["calls"] = list(proc.get("calls", []))
+            return results
+
+        def render(behavior):
+            self.results["behavior"] = behavior
             self.LoadResultCategories()
             self.BuildProcessTree()
             self.behaviorButton.Disable()
+            self.tidButton.Enable()
+            self.apiFilterButton.Enable()
+            self.behaviorComplete = True
 
-        self.tidButton.Enable()
-        self.apiFilterButton.Enable()
-        self.behaviorComplete = True
+        return ("behavior", compute, render)
 
     def BuildProcessTree(self):
         # Guard the selection handler: DeleteAllItems fires EVT_TREE_SEL_CHANGED with an

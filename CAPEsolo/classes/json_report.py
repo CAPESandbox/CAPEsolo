@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from json import dump
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def TargetInfo(targetFile):
     peData = PortableExecutable(str(targetFile)).run()
     fileinfo["pe"] = peData
     # The signature runner skips any signature declaring filter_analysistypes unless this
-    # matches (signatures.py:1263). Nothing set it, so 8 of the 29 community signatures -
+    # matches (signatures.py:1263). Nothing set it, so community signatures declaring it -
     # including network_http and network_cnc_http - were never even evaluated. CAPEsolo
     # always analyses a file.
     fileinfo["category"] = "file"
@@ -223,8 +224,8 @@ def WriteJsonFile(results, analysisDir=""):
         if analysisDir:
             # Best-effort: a failure here must not lose the Desktop copy the caller expects.
             try:
-                with open(Path(analysisDir) / "report.json", "w", encoding="utf-8", errors="replace") as f:
-                    dump(results, f, indent=4)
+                # A copy of the file just written rather than a second full serialisation.
+                shutil.copyfile(filepath, Path(analysisDir) / "report.json")
             except Exception as e:
                 log.warning("Could not write report.json into the analysis directory: %s", e)
 
@@ -322,7 +323,7 @@ def GetResults(targetFile, analysisDir, writeFile=True, includeStrings=True, pca
     results = {}
     results["target"] = TargetInfo(targetFile)
     results["behavior"] = BehaviorResults(analysisDir)
-    # js_log and network are built before the signatures, which read both: 14 of the shipped
+    # js_log and network are built before the signatures, which read both: the community
     # network signatures look up results["network"], and previously js_log was populated
     # after they had already run.
     results["js_log"] = JsLog(analysisDir)

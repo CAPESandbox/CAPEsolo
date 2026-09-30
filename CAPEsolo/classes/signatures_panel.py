@@ -4,6 +4,7 @@ import wx.lib.scrolledpanel as scrolled
 
 from CAPEsolo.capelib.network_summary import NetworkSummary
 from CAPEsolo.capelib.signatures import RunSignatures
+from CAPEsolo.capelib.utils import JsonPathExists
 
 from . import ui_kit as ui
 from .custom_grid import CopyableGrid
@@ -68,11 +69,27 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
     # A signature reads whatever is in results at the moment it runs; anything added later
     # simply does not exist for it, and it reports no error. Two shipped signatures read the
     # payload and config data, and 12 read the network summary, so running this pass before
-    # those tabs have produced anything quietly under-reports.
-    GUI_PREREQS = (("payloads", "Payloads"), ("configs", "Configs"))
-
+    # those tabs have produced anything quietly under-reports. A tab with nothing to process
+    # never publishes its key, so it only counts as missing when it has work to do.
     def MissingPrereqs(self):
-        return [tab for key, tab in self.GUI_PREREQS if key not in self.results]
+        missing = []
+        if "payloads" not in self.results and JsonPathExists(self.analysisDir):
+            missing.append("Payloads")
+        if "configs" not in self.results:
+            yaraTab = getattr(self.GetMainFrame(), "yaraTab", None)
+            if yaraTab and not yaraTab.yaraComplete:
+                # The config hits come from the yara pass; before it runs "no hits" means nothing.
+                missing.append("Yara")
+            elif self.parent.configHits:
+                missing.append("Configs")
+        return missing
+
+    def GetMainFrame(self):
+        parent = self.GetParent()
+        while parent and not isinstance(parent, wx.Frame):
+            parent = parent.GetParent()
+
+        return parent
 
     def UpdateGenerateButtonState(self):
         missing = self.MissingPrereqs()
@@ -119,7 +136,19 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
             )
             return
 
-        with wx.BusyCursor():
+        self.GetMainFrame().RunSteps([self.SignaturesStep()])
+
+    def SignaturesStep(self):
+        """The signature pass as a (label, compute, render) step: the pass runs on the
+        processing worker, the grid is filled on the GUI thread. The prerequisites are checked
+        again when it runs, since in the auto-process chain it is planned before the tabs it
+        depends on have finished."""
+
+        def compute():
+            missing = ui.on_gui(self.MissingPrereqs)
+            if missing:
+                # Auto-process: lands in its failure summary instead of a modal mid-run.
+                raise RuntimeError(f"Process these tabs first: {', '.join(missing)}")
             self.BuildSignatureInputs()
             try:
                 RunSignatures(results=self.results, analysis_path=self.analysisDir).run()
@@ -127,9 +156,12 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
                 # The view exists for the signature pass only; the tabs own the real keys.
                 self.results.pop("CAPE", None)
 
-        self.signaturesButton.Disable()
-        self.AddTableData()
-        self.signaturesComplete = True
+        def render(_):
+            self.signaturesButton.Disable()
+            self.AddTableData()
+            self.signaturesComplete = True
+
+        return ("signatures", compute, render)
 
     def AddTableData(self):
         try:

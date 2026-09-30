@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from CAPEsolo.capelib.capture_report import (
     BuildCaptureReport,
     WriteCaptureReport,
 )
+from CAPEsolo.capelib.config_paths import user_config_path
 from CAPEsolo.capelib.js_log import GetJsLogPath
 from CAPEsolo.capelib.path_utils import path_exists
 from CAPEsolo.capelib.resultserver import STATS, ResultServer
@@ -37,13 +39,13 @@ from CAPEsolo.utils.download_sample import (
     download_dir,
     download_enabled,
 )
-from CAPEsolo.utils.update_yara import UpdateYara
+from CAPEsolo.utils.update_yara import Update
 
 from . import ui_kit as ui
 from .analysis_conf import AnalysisConfPanel
 from .debug_console import DebugConsole
 from .html_report import ReportHTML
-from .json_report import GetResults
+from .json_report import GetResults, WriteJsonFile
 from .key_event import EVT_ANALYZER_COMPLETE, EVT_ANALYZER_COMPLETE_ID
 from .logger_window import LoggerWindow
 from .process_tree_window import ProcessTreeWindow
@@ -266,6 +268,51 @@ class _DownloadCredentialsDialog(ui.Dialog):
         return password, keys
 
 
+class _ChoiceDialog(ui.Dialog):
+    """A few groups of checkboxes and OK/Cancel: the Update and Reports prompts."""
+
+    def __init__(self, parent, title, intro, groups, ok="OK"):
+        """*groups* is [(card title, [(key, label, ticked), ...]), ...]."""
+        super().__init__(parent, title=title)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(wx.StaticText(self, label=intro), flag=wx.ALL, border=dip(self, SP_MD))
+
+        self.checks = {}
+        for cardTitle, options in groups:
+            card = ui.Card(self, title=cardTitle)
+            for key, label, ticked in options:
+                check = ui.Check(card, label=label)
+                check.SetValue(ticked)
+                card.body.Add(check, flag=wx.BOTTOM, border=dip(self, SP_SM))
+                self.checks[key] = check
+            outer.Add(card, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=dip(self, SP_MD))
+
+        outer.Add(
+            ui.dialog_buttons(self, ok=ok),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            border=dip(self, SP_MD),
+        )
+
+        # Theme first, then fit, as in _DownloadCredentialsDialog.
+        self.SetSizer(outer)
+        apply_theme(self)
+        self.SetBackgroundColour(BG_MAIN)
+        self.Fit()
+        self.SetMinSize(self.GetSize())
+
+    def GetChoices(self):
+        return {key for key, check in self.checks.items() if check.GetValue()}
+
+
+def AskChoices(parent, *args, **kwargs):
+    """Show a _ChoiceDialog; the ticked keys, or None if it was cancelled."""
+    dialog = _ChoiceDialog(parent, *args, **kwargs)
+    try:
+        return dialog.GetChoices() if dialog.ShowModal() == wx.ID_OK else None
+    finally:
+        dialog.Destroy()
+
+
 class StartPanel(wx.Panel):
     def __init__(self, parent):
         # FULL_REPAINT_ON_RESIZE, as a constructor style (wxMSW picks the registered window
@@ -296,8 +343,7 @@ class StartPanel(wx.Panel):
         # A prior/restored analysis (s_* found by GetPreviousTarget) is reportable without a run,
         # so enable the report buttons; the per-tab process buttons enable from their artifacts.
         if self.targetFile:
-            self.jsonReportBtn.Enable()
-            self.htmlReportBtn.Enable()
+            self.reportsBtn.Enable()
         self.LoadAnalysisConfFile()
         self.Bind(EVT_ANALYZER_COMPLETE, self.OnAnalyzerComplete)
         # Deferred so the frame is realized before the modal password dialog.
@@ -383,7 +429,32 @@ class StartPanel(wx.Panel):
         self.downloadDirBtn.Bind(wx.EVT_BUTTON, self.OnBrowseDownloadDir)
         downloadPathRow.Add(self.downloadPathField, 1, wx.EXPAND | wx.RIGHT, gapS)
         downloadPathRow.Add(self.downloadDirBtn, 0, wx.ALIGN_CENTER_VERTICAL)
-        targetCard.body.Add(downloadPathRow, 0, wx.EXPAND)
+        targetCard.body.Add(downloadPathRow, 0, wx.EXPAND | wx.BOTTOM, gapM)
+
+        # Re-read an analysis without running one: the one already in the analysis directory
+        # (e.g. restored from restore.zip at startup, which was never processed), or a full
+        # results bundle from Zip Results.
+        targetCard.body.Add(
+            ui.SectionHeader(targetCard, "Previous analysis"), 0, wx.EXPAND | wx.BOTTOM, gapS
+        )
+        previousRow = wx.BoxSizer(wx.HORIZONTAL)
+        self.reprocessBtn = ui.Button(
+            targetCard,
+            label="Reprocess",
+            glyph=ui.REFRESH,
+            tooltip="Clear the result tabs and process the analysis in the analysis directory again.",
+        )
+        self.reprocessBtn.Bind(wx.EVT_BUTTON, self.OnReprocess)
+        self.openBundleBtn = ui.Button(
+            targetCard,
+            label="Open Bundle...",
+            glyph=ui.ARCHIVE,
+            tooltip="Extract a full results bundle (Zip Results) into the analysis directory and process it.",
+        )
+        self.openBundleBtn.Bind(wx.EVT_BUTTON, self.OnOpenBundle)
+        previousRow.Add(self.reprocessBtn, 0, wx.RIGHT, gapS)
+        previousRow.Add(self.openBundleBtn, 0)
+        targetCard.body.Add(previousRow, 0, wx.EXPAND)
 
         # -- Package & options ----------------------------------------------
         packageCard = ui.Card(body, title="Package and options")
@@ -739,16 +810,16 @@ class StartPanel(wx.Panel):
         )
         self.autoProcess.SetValue(True)
 
-        self.jsonReportBtn = ui.Button(self, label="JSON Report", glyph=ui.DOCUMENT)
-        self.jsonReportBtn.Disable()
-        self.jsonReportBtn.Bind(wx.EVT_BUTTON, self.JsonReport)
+        self.reportsBtn = ui.Button(
+            self, label="Reports", glyph=ui.DOCUMENT, tooltip="Build the JSON and/or HTML report."
+        )
+        self.reportsBtn.Disable()
+        self.reportsBtn.Bind(wx.EVT_BUTTON, self.OnReports)
 
-        self.htmlReportBtn = ui.Button(self, label="HTML Report", glyph=ui.DOCUMENT)
-        self.htmlReportBtn.Disable()
-        self.htmlReportBtn.Bind(wx.EVT_BUTTON, self.HtmlReport)
-
-        updateYaraBtn = ui.Button(self, label="Update Yara", glyph=ui.REFRESH)
-        updateYaraBtn.Bind(wx.EVT_BUTTON, self.OnUpdateYara)
+        updateBtn = ui.Button(
+            self, label="Update", glyph=ui.REFRESH, tooltip="Download YARA rules and community signatures."
+        )
+        updateBtn.Bind(wx.EVT_BUTTON, self.OnUpdate)
 
         self.zipResultsBtn = ui.Button(self, label="Zip Results", glyph=ui.ARCHIVE)
         self.zipResultsBtn.SetToolTip(
@@ -771,9 +842,8 @@ class StartPanel(wx.Panel):
         actions.Add(self.autoProcess, 0, wx.ALIGN_CENTER_VERTICAL)
         actions.AddStretchSpacer(1)
         for button in (
-            self.jsonReportBtn,
-            self.htmlReportBtn,
-            updateYaraBtn,
+            self.reportsBtn,
+            updateBtn,
             self.zipResultsBtn,
             openDirBtn,
         ):
@@ -1070,8 +1140,7 @@ class StartPanel(wx.Panel):
 
             self.log("Run completed")
             self.resultserver.shutdown_server()
-            self.jsonReportBtn.Enable()
-            self.htmlReportBtn.Enable()
+            self.reportsBtn.Enable()
         except Exception:
             self.log(traceback.format_exc())
 
@@ -1087,6 +1156,7 @@ class StartPanel(wx.Panel):
                 f"Analysis complete - {len(warnings)} capture warning(s), see {CAPTURE_FILE}"
             )
 
+        self.SetAnalysisControls(running=False)
         if self.autoProcess.GetValue():
             self.AutoProcessTabs()
         return True
@@ -1094,42 +1164,57 @@ class StartPanel(wx.Panel):
     def AutoProcessTabs(self):
         """Populate the result tabs in dependency order after a run so the user need not
         open each tab and click its process button. Only called when Auto-process is
-        checked; the handlers it calls each disable their own button and set a completion
-        flag, so those buttons stay disabled once processed. When Auto-process is unchecked
-        this is skipped and the buttons enable as before for manual processing.
+        checked; the steps each disable their tab's button and set its completion flag, so
+        those buttons stay disabled once processed. When Auto-process is unchecked this is
+        skipped and the buttons enable as before for manual processing.
+
+        Runs on the processing worker (MainFrame.RunSteps), so the window stays usable. The
+        steps come from a generator, so each condition below is checked only once the steps
+        before it have finished - configHits, for one, is filled by the yara step.
         """
         mainFrame = self.GetMainFrame()
-        statusBar = mainFrame.statusBar
-        with wx.BusyCursor():
-            self._AutoStep(statusBar, "info", mainFrame.infoTab.LoadAndDisplayContent)
+        if mainFrame.processing:
+            # A tab the user started by hand is still running; RunSteps would refuse this,
+            # and the run's processing would silently never happen.
+            wx.CallLater(500, self.AutoProcessTabs)
+            return
+
+        def steps():
+            step = mainFrame.infoTab.InfoStep()
+            if step:
+                yield step
 
             logsDir = Path(self.analysisDir) / "logs"
             if logsDir.exists() and any(logsDir.iterdir()) and not mainFrame.behaviorTab.behaviorComplete:
-                self._AutoStep(statusBar, "behavior", lambda: mainFrame.behaviorTab.GenerateBehavior(None))
+                yield mainFrame.behaviorTab.BehaviorStep()
 
             # Before payloads so reconstructed files dropped from the JS network log are picked up by
-            # PayloadsReady and the yara scan below in the same run.
+            # the payload list and the yara scan below in the same run.
             if not mainFrame.jsConsoleTab.jsLogComplete and path_exists(str(GetJsLogPath(self.analysisDir))):
-                self._AutoStep(statusBar, "js log", mainFrame.jsConsoleTab.ProcessJsLog)
+                yield mainFrame.jsConsoleTab.JsLogStep()
 
-            self._AutoStep(statusBar, "payloads", mainFrame.payloadsTab.PayloadsReady)
+            step = mainFrame.payloadsTab.PayloadsStep()
+            if step:
+                yield step
 
             if self.targetFile and not mainFrame.yaraTab.yaraComplete:
-                self._AutoStep(statusBar, "yara", lambda: mainFrame.yaraTab.ProcessYara(None))
+                yield mainFrame.yaraTab.YaraStep()
 
             if self.parent.configHits:
-                self._AutoStep(statusBar, "configs", lambda: mainFrame.configsTab.ExtractConfigs(None))
+                yield mainFrame.configsTab.ConfigsStep()
 
             if self.parent.results and not mainFrame.signaturesTab.signaturesComplete:
-                self._AutoStep(statusBar, "signatures", lambda: mainFrame.signaturesTab.GenerateSignatures(None))
-        statusBar.SetMessage("Analysis complete - tabs processed")
+                yield mainFrame.signaturesTab.SignaturesStep()
 
-    def _AutoStep(self, statusBar, label, fn):
-        statusBar.SetMessage(f"Processing {label}...")
-        try:
-            fn()
-        except Exception:
-            log.exception("Auto-process: failed to process %s", label)
+        def done(failed):
+            if failed:
+                mainFrame.statusBar.SetMessage(
+                    f"Analysis complete - {len(failed)} tab(s) failed: {', '.join(failed)} (see log)"
+                )
+            else:
+                mainFrame.statusBar.SetMessage("Analysis complete - tabs processed")
+
+        mainFrame.RunSteps(steps(), onDone=done)
 
     def PendingUploads(self, folders):
         """Destination paths the end-of-run uploads are expected to produce."""
@@ -1550,8 +1635,8 @@ class StartPanel(wx.Panel):
         self.targetPath.SetValue(str(path))
         self.OnTargetSelection()
 
-    def CopyTarget(self):
-        self.targetFile = Path(self.analysisDir) / f"s_{hash_file(hashlib.sha256, self.target)}"
+    def CopyTarget(self, targetFile):
+        self.targetFile = targetFile
         shutil.copy(self.target, self.targetFile)
 
     def StartAnalysis(self):
@@ -1586,6 +1671,9 @@ class StartPanel(wx.Panel):
                 self.dbgConsole.launch()
             mainFrame.statusBar.StartCountdown(self.countdown)
             self.StartAnalyzerThread(self.analyzer)
+            # One analyzer at a time: a second Launch would start another on the same result
+            # server port and analysis directory. Re-enabled when the run ends.
+            self.SetAnalysisControls(running=True)
             self.terminateAnalyzerBtn.Enable()
             self.GetMainFrame().extendTimeoutBtn.Enable()
             # os.unlink(ANALYSIS_CONF)
@@ -1697,7 +1785,9 @@ class StartPanel(wx.Panel):
 
     def OnTerminateAnalyzer(self, event):
         try:
-            idHash = "2b42b81577ab55cd2bcf2ac87b889bbb"
+            # The analyzer watches for md5("cape-<id>") of the id it was started with.
+            config = getattr(getattr(self, "analyzer", None), "config", None)
+            idHash = hashlib.md5(f"cape-{getattr(config, 'id', 2)}".encode()).hexdigest()
             completeFolder = os.path.join(os.environ["TMP"], idHash)
             Path(completeFolder).mkdir(exist_ok=True)
             self.terminateAnalyzerBtn.Disable()
@@ -1722,6 +1812,10 @@ class StartPanel(wx.Panel):
         self.GetMainFrame().statusBar.SetMessage(f"Timeout extended by {extra}s")
 
     def OnLaunchAnalyzer(self, event):
+        # These rebuild the result pages, which a running processing job is still filling.
+        if self.GetMainFrame().processing:
+            return
+        self._reportCache = None
         originalPath = Path(self.targetPath.GetValue())
         newFilename = sanitize_filename(originalPath.name)
         if newFilename != originalPath.name:
@@ -1748,7 +1842,23 @@ class StartPanel(wx.Panel):
             )
             return
 
-        self.CopyTarget()
+        # One target per analysis directory (the VM is reverted between samples). A different
+        # sample would land beside the previous one and mix into its logs and payloads;
+        # relaunching the same sample, e.g. static then dynamic, is fine.
+        targetFile = Path(self.analysisDir) / f"s_{hash_file(hashlib.sha256, self.target)}"
+        previous = GetPreviousTarget(self.analysisDir)
+        if previous and previous.name != targetFile.name:
+            ui.message(
+                f"{self.analysisDir} already holds the analysis of another sample "
+                f"({previous.name}).\n\nRevert the VM before analysing a new sample, or use "
+                "Zip Results first to keep this one.",
+                "Launch",
+                wx.OK | wx.ICON_WARNING,
+            )
+            return
+
+        self.GetMainFrame().ResetResults()
+        self.CopyTarget(targetFile)
         self.parent.targetFile = self.targetFile
 
         if self.staticAnalysis.GetValue():
@@ -1840,9 +1950,146 @@ class StartPanel(wx.Panel):
         log.info(message)
 
     def RunAnalyzer(self, analyzer, callback=None):
-        result = analyzer.run()
+        try:
+            result = analyzer.run()
+        except Exception:
+            # Previously this killed the thread silently: the completion event never came and
+            # the UI stayed in "Analyzing" with Launch locked out.
+            log.exception("Analyzer run failed")
+            wx.CallAfter(self.OnAnalyzerFailed)
+            return
         if callback:
             wx.CallAfter(callback, result)
+
+    def OnAnalyzerFailed(self):
+        from CAPEsolo.analyzer import disconnect_logger, disconnect_pipes
+
+        mainFrame = self.GetMainFrame()
+        mainFrame.statusBar.Finish("Analysis failed - see the analysis log")
+        mainFrame.extendTimeoutBtn.Disable()
+        self.terminateAnalyzerBtn.Disable()
+        # The same teardown OnAnalyzerComplete does, each step on its own so one failing does
+        # not leave the rest (the pipe names are fixed for the session) for the next Launch.
+        if self.dbgConsole:
+            with suppress(Exception):
+                self.dbgConsole.shutdown()
+        with suppress(Exception):
+            self.analyzer.command_pipe.stop()
+        with suppress(Exception):
+            self.analyzer.log_pipe_server.stop()
+        with suppress(Exception):
+            disconnect_pipes()
+        with suppress(Exception):
+            disconnect_logger()
+        with suppress(Exception):
+            self.resultserver.shutdown_server()
+        self.SetAnalysisControls(running=False)
+
+    def SetAnalysisControls(self, running):
+        self._analyzing = running
+        self.UpdateAnalysisControls()
+
+    def UpdateAnalysisControls(self):
+        """Launch, the previous-analysis actions and the reports are unavailable while a run is
+        active or a processing job is: the first two rebuild the result pages the job is
+        filling, and a report would parse the same directory at the same time."""
+        busy = getattr(self, "_analyzing", False) or self.GetMainFrame().processing
+        for button in (self.launchAnalyzerBtn, self.reprocessBtn, self.openBundleBtn):
+            button.Enable(not busy)
+        if self.targetFile:
+            self.reportsBtn.Enable(not busy)
+
+    def OnReprocess(self, event):
+        # These rebuild the result pages, which a running processing job is still filling.
+        if self.GetMainFrame().processing:
+            return
+        targetFile = GetPreviousTarget(self.analysisDir)
+        if not targetFile:
+            ui.message(
+                f"There is no analysis in {self.analysisDir} to process.",
+                "Reprocess",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+        self.ProcessPrevious(targetFile)
+
+    def ProcessPrevious(self, targetFile):
+        self.GetMainFrame().ResetResults()
+        self.targetFile = targetFile
+        self.parent.targetFile = targetFile
+        self.reportsBtn.Enable()
+        self.AutoProcessTabs()
+
+    def OnOpenBundle(self, event):
+        from CAPEsolo.cli import _is_report_bundle
+
+        # These rebuild the result pages, which a running processing job is still filling.
+        if self.GetMainFrame().processing:
+            return
+
+        with wx.FileDialog(
+            self,
+            "Open a results bundle",
+            wildcard="Zip files (*.zip)|*.zip",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as dialog:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            bundlePath = dialog.GetPath()
+
+        try:
+            with zipfile.ZipFile(bundlePath) as archive:
+                # Same check as the startup restore: a report bundle has no payloads, so the
+                # tabs would read an analysis that is not on disk.
+                if _is_report_bundle(archive):
+                    ui.message(
+                        "This is a report bundle (no payloads). Open it with "
+                        "tools/report_viewer.py instead.",
+                        "Open Bundle",
+                        wx.OK | wx.ICON_INFORMATION,
+                    )
+                    return
+
+                analysisDir = Path(self.analysisDir)
+                if GetPreviousTarget(analysisDir):
+                    if ui.message(
+                        f"{analysisDir} already holds an analysis. It will be deleted and "
+                        "replaced by the bundle.\n\nUse Zip Results first to keep it.\n\n"
+                        "Replace it?",
+                        "Open Bundle",
+                        wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+                    ) != wx.YES:
+                        return
+                    # The Analysis Log window's handler keeps analysis.log open, and Windows
+                    # refuses to delete an open file - half way through the directory.
+                    root = logging.getLogger()
+                    for handler in list(root.handlers):
+                        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename).parent == analysisDir:
+                            root.removeHandler(handler)
+                            handler.close()
+                    # Only reached for a directory holding an s_* target, i.e. one that really
+                    # is an analysis directory, never an arbitrary configured path.
+                    for child in sorted(analysisDir.iterdir(), key=lambda c: c.name.startswith("s_")):
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                archive.extractall(str(analysisDir))
+        except (OSError, zipfile.BadZipFile) as e:
+            ui.message(
+                f"Could not open the bundle:\n{e}\n\nThe analysis directory may be partly cleared.",
+                "Open Bundle",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        targetFile = GetPreviousTarget(self.analysisDir)
+        if not targetFile:
+            ui.message(
+                "The bundle holds no analysed target (s_* file).", "Open Bundle", wx.OK | wx.ICON_ERROR
+            )
+            return
+        self.ProcessPrevious(targetFile)
 
     def StartAnalyzerThread(self, analyzer):
         def OnComplete(result):
@@ -1862,6 +2109,14 @@ class StartPanel(wx.Panel):
 
     def OnZipResults(self, event):
         """Archive the analysis for another machine, or for restoring into a clean VM."""
+        # A running job may still be writing into the directory (config dumps, JS drops).
+        if self.GetMainFrame().processing:
+            ui.message(
+                "Processing is still running. Zip the results once it has finished.",
+                "Zip Results",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
         answer = ui.message(
             "Include the sample and dumped payloads?\n\n"
             "Yes - full bundle: the whole analysis directory, for restoring into a clean VM. "
@@ -1887,10 +2142,15 @@ class StartPanel(wx.Panel):
                     "This runs the same processing as the JSON Report button and can take a while."
                 )
             if ui.message(prompt, "Zip Results", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-                self.JsonReport(None, confirm=False)
+                # The report is built on the processing worker; zip once it is written.
+                self.GenerateReports({"json"}, onDone=lambda ok: self._StartZip(full))
+                return
             elif not full:
                 return
 
+        self._StartZip(full)
+
+    def _StartZip(self, full):
         prefix = "capesolo_analysis" if full else "capesolo_report"
         dest = Path(desktop_dir()) / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
         self.zipResultsBtn.Disable()
@@ -1994,32 +2254,54 @@ class StartPanel(wx.Panel):
     def OnIdbgChecked(self, event):
         self.idbg = self.idbgCheckbox.GetValue()
 
-    def OnUpdateYara(self, event):
-        confirm = ui.message(
-            "Download and overwrite any existing YARA rules. "
-            "This could take a few minutes.\n\n"
-            "Do you want to continue?",
-            "Confirm YARA Update",
-            wx.YES_NO | wx.ICON_QUESTION | wx.CENTER,
+    def OnUpdate(self, event):
+        userRoot = user_config_path().parent
+        choices = AskChoices(
+            self,
+            "Update",
+            "CAPEsolo and CAPEv2 replace the packaged YARA rules (the CAPE rules and the monitor\n"
+            "rules capemon uses) with those of the repositories ticked; where both have a file,\n"
+            f"CAPEsolo's is used. Community rules go to {userRoot / 'yara' / 'community'},\n"
+            f"community signatures to {userRoot / 'signatures' / 'community'}.\n"
+            "Your own rules and signatures are never touched. This could take a few minutes.",
+            [
+                ("YARA rules", [
+                    ("capesolo", "CAPEsolo (CAPESandbox/CAPEsolo)", True),
+                    ("capev2", "CAPEv2 (kevoreilly/CAPEv2)", False),
+                    ("community", "Community (CAPESandbox/community)", False),
+                ]),
+                ("Signatures", [
+                    ("signatures", "Community (CAPESandbox/community)", False),
+                ]),
+            ],
+            ok="Update",
         )
-
-        if confirm != wx.YES:
+        if not choices:
             return
+        yaraSources = tuple(source for source in ("capesolo", "capev2", "community") if source in choices)
+        signatures = "signatures" in choices
 
-        try:
-            busy = wx.BusyInfo("Please wait... Updating YARA rules.", parent=self)
-            wx.Yield()
-            updated = UpdateYara(Path(self.capesoloRoot))
-            del busy
-            if updated:
-                details = "\n".join(f"{path}: {count} rules updated" for path, count in updated.items())
-                ui.message(f"YARA rules updated successfully:\n\n{details}", "Update Complete", wx.OK | wx.ICON_INFORMATION)
+        outcome = {}
+
+        def compute():
+            outcome["updated"] = Update(Path(self.capesoloRoot), yaraSources, signatures)
+
+        def done(failed):
+            updated = outcome.get("updated")
+            if failed:
+                ui.message(
+                    "Update failed - see the analysis log. The existing rules and signatures were kept.",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR,
+                )
+            elif updated:
+                details = "\n".join(f"{what}: {count} files" for what, count in updated.items())
+                ui.message(f"Update complete:\n\n{details}", "Update Complete", wx.OK | wx.ICON_INFORMATION)
             else:
-                ui.message("No YARA rules were updated.", "Update Complete", wx.OK | wx.ICON_INFORMATION)
+                ui.message("Nothing was updated.", "Update Complete", wx.OK | wx.ICON_INFORMATION)
 
-        except Exception as e:
-            del busy  # noqa: F821
-            ui.message(f"Failed to update YARA rules:\n{e!s}", "Error", wx.OK | wx.ICON_ERROR)
+        # Downloads a few hundred files: on the processing worker, not the GUI thread.
+        self.GetMainFrame().RunSteps([("update", compute, None)], onDone=done)
 
     def OnYaraSave(self, event):
         yaraText = self.yaraRule.GetValue()
@@ -2076,58 +2358,64 @@ class StartPanel(wx.Panel):
 
         self.yaraRule.SetValue(yaraText)
 
-    def JsonReport(self, event, confirm=True):
-        # confirm=False is for callers that have already asked - Zip Results offers to build a
-        # missing report before archiving, and a second identical prompt is just noise.
-        if confirm and ui.message(
-            "Generate JSON report.\n\nDo you want to continue?",
-            "Confirm",
-            wx.YES_NO | wx.ICON_QUESTION | wx.CENTER,
-        ) != wx.YES:
-            return
+    def _ReportResults(self, pcapPath):
+        """The GetResults dict the JSON and HTML reports share. Each GetResults repeats behaviour,
+        yara, strings, configs and signatures from scratch, so it runs once for both. Rebuilt
+        when the capture or files.json changes (artifacts can still arrive after the run), and
+        dropped on the next Launch. *pcapPath* is GetCapturePath(), read by the caller on the
+        GUI thread: this runs on the processing worker."""
+        filesJson = Path(self.analysisDir) / "files.json"
+        key = (str(self.targetFile), pcapPath, filesJson.stat().st_mtime if filesJson.exists() else None)
+        cached = getattr(self, "_reportCache", None)
+        if not cached or cached[0] != key:
+            cached = (key, GetResults(self.targetFile, self.analysisDir, False, pcapPath=pcapPath))
+            self._reportCache = cached
+        return cached[1]
 
-        try:
-            busy = wx.BusyInfo("Please wait... Creating JSON report.", parent=self)
-            wx.Yield()
-            self.jsonReportBtn.Disable()
-            completed, msg = GetResults(
-                self.targetFile, self.analysisDir, pcapPath=self.GetCapturePath()
-            )
-            del busy
-            if completed:
-                ui.message("JSON report completed successfully.", "JSON Report", wx.OK | wx.ICON_INFORMATION)
-            else:
-                ui.message(f"JSON report was unsuccessful: {msg}", "JSON Report", wx.OK | wx.ICON_INFORMATION)
-
-        except Exception as e:
-            del busy  # noqa: F821
-            ui.message(f"Failed to create JSON report:\n{e!s}", "Error", wx.OK | wx.ICON_ERROR)
-
-    def HtmlReport(self, event):
-        confirm = ui.message(
-            "Generate HTML report.\n\nDo you want to continue?",
-            "Confirm",
-            wx.YES_NO | wx.ICON_QUESTION | wx.CENTER,
+    def OnReports(self, event):
+        choices = AskChoices(
+            self,
+            "Reports",
+            "Build the reports ticked from this analysis. Each is written to the Desktop and into\n"
+            "the analysis directory.",
+            [("Reports", [("json", "JSON (report.json)", True), ("html", "HTML (report.html)", True)])],
+            ok="Generate",
         )
+        if choices:
+            self.GenerateReports(choices)
 
-        if confirm != wx.YES:
-            return
+    def GenerateReports(self, kinds, onDone=None):
+        """Build the *kinds* ("json", "html") of report on the processing worker, from one
+        GetResults. onDone(ok) runs once they are written or have failed - Zip Results waits on
+        it, since the caller cannot simply carry on after this returns."""
+        outcome = {}
+        pcapPath = self.GetCapturePath()
 
-        try:
-            busy = wx.BusyInfo("Please wait... Creating HTML report.", parent=self)
-            wx.Yield()
-            self.htmlReportBtn.Disable()
-            results = GetResults(
-                self.targetFile, self.analysisDir, False, pcapPath=self.GetCapturePath()
-            )
-            report = ReportHTML()
-            completed, msg = report.run(self.analysisDir, self.capesoloRoot, results)
-            del busy
-            if completed:
-                ui.message("HTML report completed successfully.", "HTML Report", wx.OK | wx.ICON_INFORMATION)
+        def compute():
+            results = self._ReportResults(pcapPath)
+            if "json" in kinds:
+                outcome["json"] = WriteJsonFile(results, self.analysisDir)
+            if "html" in kinds:
+                outcome["html"] = ReportHTML().run(self.analysisDir, self.capesoloRoot, results)
+
+        def done(failed):
+            if failed:
+                ok = False
+                ui.message("Failed to create the reports - see the analysis log.", "Error", wx.OK | wx.ICON_ERROR)
             else:
-                ui.message(f"HTML report was unsuccessful: {msg}", "HTML Report", wx.OK | wx.ICON_INFORMATION)
+                ok, lines = True, []
+                for kind, label in (("json", "JSON report"), ("html", "HTML report")):
+                    if kind in outcome:
+                        completed, msg = outcome[kind]
+                        ok = ok and bool(completed)
+                        lines.append(f"{label}: {'done' if completed else f'failed - {msg}'}")
+                ui.message("\n".join(lines), "Reports", wx.OK | (wx.ICON_INFORMATION if ok else wx.ICON_WARNING))
+            if onDone:
+                onDone(ok)
 
-        except Exception as e:
-            del busy  # noqa: F821
-            ui.message(f"Failed to create HTML report:\n{e!s}", "Error", wx.OK | wx.ICON_ERROR)
+        if not self.GetMainFrame().RunSteps([("reports", compute, None)], onDone=done):
+            ui.message(
+                "Processing is still running. Generate the reports once it has finished.",
+                "Reports",
+                wx.OK | wx.ICON_INFORMATION,
+            )

@@ -50,6 +50,46 @@ Analysis results are found in C:\Users\Public\CAPEsolo\analysis.
   and survive `pip install --upgrade CAPEsolo`, which overwrites the packaged copy.
 * Only include the keys you want to change; the rest fall back to the packaged defaults.
 
+Community signatures
+* CAPEsolo ships only its own signatures. CAPEv2 / CAPESandbox community signatures go in
+  C:\Users\Public\CAPEsolo\signatures (beside cfg.ini), unmodified. **Update** (below) can fill
+  its `community` subfolder from https://github.com/CAPESandbox/community, or copy files there
+  yourself.
+* Subfolders are scanned; `deprecated` and `linux` are skipped. Files added or edited are picked
+  up on the next signature pass, with no restart.
+* A signature there replaces a shipped one with the same name. One of your own, outside
+  `community`, also beats a same-named one inside it.
+* A signature that needs a CAPEv2 module CAPEsolo does not have is skipped, and the analysis log
+  names the missing module. One that reads a results section CAPEsolo does not produce (Suricata,
+  for example) loads but never matches.
+* Optional data files those signatures look for under CAPEv2's root (`extra/msft-public-ips.csv`,
+  `data/dga.bloom`) are read from C:\Users\Public\CAPEsolo.
+
+YARA rules
+* CAPEsolo ships its CAPE rules. Your own rules go in C:\Users\Public\CAPEsolo\yara, and
+  community rules go in its `community` subfolder. Both are scanned alongside the CAPE rules.
+  Where two files share a name: `Desktop\custom` wins, then your folder, then `community`, then
+  the packaged rules.
+* `pip install --upgrade CAPEsolo` puts back the packaged rules.
+
+Update (Start tab)
+* Asks what to download:
+  * **YARA rules - CAPEsolo** (ticked by default) and **CAPEv2** rebuild the packaged rules (the
+    CAPE rules and the monitor rules capemon uses in the guest) from whichever are ticked. Where
+    both have a file, CAPEsolo's is used.
+  * **YARA rules - Community** replaces `yara\community` with CAPESandbox/community's
+    `data/yara/CAPE`.
+  * **Signatures - Community** replaces `signatures\community` with CAPESandbox/community's
+    `modules/signatures/windows` and `all`.
+* Your own files, and the Debugger tab's saved rule, are never touched. Everything is downloaded
+  before anything is replaced, so a failed update keeps what was there.
+* The same choices are available as `capesolo --update_yara capesolo,capev2,community` (no value
+  means capesolo), `capesolo --update_signatures`, and the MCP tool `capesolo_update_yara`.
+
+Reports (Start tab)
+* **Reports** builds the JSON and/or HTML report (both ticked by default) from one pass over the
+  analysis. Each is written to the Desktop and into the analysis directory.
+
 Revert the VM after each analysis.
 
 View a JSON Report (standalone)
@@ -137,7 +177,7 @@ Preserve Results From an Unstable VM
   then start CAPEsolo. On startup it extracts the zip into the analysis directory (only when that
   directory has no analysis yet) and renames it `restore.zip.done` so it restores once.
 * The result tabs then read the restored artifacts with no re-run - process each tab (Behavior,
-  Yara, Configs, Signatures) or use the JSON/HTML Report buttons.
+  Yara, Configs, Signatures) or use the Reports button.
 
 Download Samples by Hash
 * The Start panel can fetch a sample by MD5/SHA1/SHA256 from VirusTotal or MalwareBazaar and

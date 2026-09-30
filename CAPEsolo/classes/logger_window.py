@@ -49,7 +49,10 @@ class LoggerWindow(wx.Frame, KeyEventHandlerMixin):
 
         fileHandler = logging.FileHandler(self.analysisLogPath)
         wxHandler = WxTextCtrlHandler(self.resultsWindow)
+        # force: basicConfig is otherwise a no-op after the first Launch, which left a second
+        # run's window empty and the records going to the destroyed one's text control.
         logging.basicConfig(
+            force=True,
             level=logging.DEBUG,
             handlers=[fileHandler, wxHandler],
             format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",

@@ -457,25 +457,41 @@ class Processes:
         return results
 
 
+class _UniqueList(list):
+    """A list with O(1) membership. Summary tests "x not in list" before every append, which
+    made it quadratic in the number of unique keys/files a noisy sample touches."""
+
+    def __init__(self):
+        super().__init__()
+        self._seen = set()
+
+    def append(self, item):
+        super().append(item)
+        self._seen.add(item)
+
+    def __contains__(self, item):
+        return item in self._seen
+
+
 class Summary:
     """Generates summary information."""
 
     key = "summary"
 
     def __init__(self, options):
-        self.keys = []
-        self.read_keys = []
-        self.write_keys = []
-        self.delete_keys = []
-        self.mutexes = []
-        self.files = []
-        self.read_files = []
-        self.write_files = []
-        self.delete_files = []
-        self.started_services = []
-        self.created_services = []
-        self.executed_commands = []
-        self.resolved_apis = []
+        self.keys = _UniqueList()
+        self.read_keys = _UniqueList()
+        self.write_keys = _UniqueList()
+        self.delete_keys = _UniqueList()
+        self.mutexes = _UniqueList()
+        self.files = _UniqueList()
+        self.read_files = _UniqueList()
+        self.write_files = _UniqueList()
+        self.delete_files = _UniqueList()
+        self.started_services = _UniqueList()
+        self.created_services = _UniqueList()
+        self.executed_commands = _UniqueList()
+        self.resolved_apis = _UniqueList()
         self.options = options
 
     def get_argument(self, call, argname, strip=False):
@@ -669,20 +685,177 @@ class Summary:
         @return: Summary of keys, read keys, written keys, mutexes and files.
         """
         return {
-            "files": self.files,
-            "read_files": self.read_files,
-            "write_files": self.write_files,
-            "delete_files": self.delete_files,
-            "keys": self.keys,
-            "read_keys": self.read_keys,
-            "write_keys": self.write_keys,
-            "delete_keys": self.delete_keys,
-            "executed_commands": self.executed_commands,
-            "resolved_apis": self.resolved_apis,
-            "mutexes": self.mutexes,
-            "created_services": self.created_services,
-            "started_services": self.started_services,
+            "files": list(self.files),
+            "read_files": list(self.read_files),
+            "write_files": list(self.write_files),
+            "delete_files": list(self.delete_files),
+            "keys": list(self.keys),
+            "read_keys": list(self.read_keys),
+            "write_keys": list(self.write_keys),
+            "delete_keys": list(self.delete_keys),
+            "executed_commands": list(self.executed_commands),
+            "resolved_apis": list(self.resolved_apis),
+            "mutexes": list(self.mutexes),
+            "created_services": list(self.created_services),
+            "started_services": list(self.started_services),
         }
+
+
+# The generic API -> event table Enhanced._process_call matches every call against; built once
+# here instead of on every call.
+_ENHANCED_GENDAT = [
+    {
+        "event": "move",
+        "object": "file",
+        "apis": [
+            "MoveFileWithProgressW",
+            "MoveFileWithProgressTransactedW",
+        ],
+        "args": [("from", "ExistingFileName"), ("to", "NewFileName")],
+    },
+    {
+        "event": "copy",
+        "object": "file",
+        "apis": ["CopyFileA", "CopyFileW", "CopyFileExW", "CopyFileExA"],
+        "args": [("from", "ExistingFileName"), ("to", "NewFileName")],
+    },
+    {
+        "event": "delete",
+        "object": "file",
+        "apis": ["DeleteFileA", "DeleteFileW", "NtDeleteFile"],
+        "args": [("file", "FileName")],
+    },
+    {
+        "event": "delete",
+        "object": "dir",
+        "apis": ["RemoveDirectoryA", "RemoveDirectoryW"],
+        "args": [("file", "DirectoryName")],
+    },
+    {
+        "event": "create",
+        "object": "dir",
+        "apis": ["CreateDirectoryW", "CreateDirectoryExW"],
+        "args": [("file", "DirectoryName")],
+    },
+    {
+        "event": "write",
+        "object": "file",
+        "apis": ["URLDownloadToFileW", "URLDownloadToFileA"],
+        "args": [("file", "FileName")],
+    },
+    {
+        "event": "read",
+        "object": "file",
+        "apis": [
+            "NtReadFile",
+        ],
+        "args": [("file", "HandleName")],
+    },
+    {
+        "event": "write",
+        "object": "file",
+        "apis": [
+            "NtWriteFile",
+        ],
+        "args": [("file", "HandleName")],
+    },
+    {
+        "event": "execute",
+        "object": "file",
+        "apis": [
+            "CreateProcessAsUserA",
+            "CreateProcessAsUserW",
+            "CreateProcessA",
+            "CreateProcessW",
+            "NtCreateProcess",
+            "NtCreateProcessEx",
+        ],
+        "args": [("file", "FileName")],
+    },
+    {
+        "event": "execute",
+        "object": "file",
+        "apis": [
+            "CreateProcessInternalW",
+            "CreateProcessWithLogonW",
+            "CreateProcessWithTokenW",
+        ],
+        "args": [("file", "CommandLine")],
+    },
+    {
+        "event": "execute",
+        "object": "file",
+        "apis": [
+            "ShellExecuteExA",
+            "ShellExecuteExW",
+        ],
+        "args": [("file", "FilePath")],
+    },
+    {
+        "event": "load",
+        "object": "library",
+        "apis": ["LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW", "LdrLoadDll", "LdrGetDllHandle"],
+        "args": [("file", "FileName"), ("pathtofile", "PathToFile"), ("moduleaddress", "BaseAddress")],
+    },
+    {
+        "event": "findwindow",
+        "object": "windowname",
+        "apis": ["FindWindowA", "FindWindowW", "FindWindowExA", "FindWindowExW"],
+        "args": [("classname", "ClassName"), ("windowname", "WindowName")],
+    },
+    {
+        "event": "write",
+        "object": "registry",
+        "apis": ["RegSetValueExA", "RegSetValueExW"],
+        "args": [("regkey", "FullName"), ("content", "Buffer")],
+    },
+    {
+        "event": "write",
+        "object": "registry",
+        "apis": ["RegCreateKeyExA", "RegCreateKeyExW"],
+        "args": [("regkey", "FullName")],
+    },
+    {
+        "event": "read",
+        "object": "registry",
+        "apis": [
+            "RegQueryValueExA",
+            "RegQueryValueExW",
+        ],
+        "args": [("regkey", "FullName"), ("content", "Data")],
+    },
+    {
+        "event": "read",
+        "object": "registry",
+        "apis": ["NtQueryValueKey"],
+        "args": [("regkey", "FullName"), ("content", "Information")],
+    },
+    {
+        "event": "delete",
+        "object": "registry",
+        "apis": ["RegDeleteKeyA", "RegDeleteKeyW", "RegDeleteValueA", "RegDeleteValueW", "NtDeleteValueKey"],
+        "args": [("regkey", "FullName")],
+    },
+    {
+        "event": "create",
+        "object": "windowshook",
+        "apis": ["SetWindowsHookExA"],
+        "args": [("id", "HookIdentifier"), ("moduleaddress", "ModuleAddress"), ("procedureaddress", "ProcedureAddress")],
+    },
+    {
+        "event": "start",
+        "object": "service",
+        "apis": ["StartServiceA", "StartServiceW"],
+        "args": [("service", "ServiceName")],
+    },
+    {
+        "event": "modify",
+        "object": "service",
+        "apis": ["ControlService"],
+        "args": [("service", "ServiceName"), ("controlcode", "ControlCode")],
+    },
+    {"event": "delete", "object": "service", "apis": ["DeleteService"], "args": [("service", "ServiceName")]},
+]
 
 
 class Enhanced:
@@ -773,160 +946,6 @@ class Enhanced:
 
         event = None
 
-        gendat = [
-            {
-                "event": "move",
-                "object": "file",
-                "apis": [
-                    "MoveFileWithProgressW",
-                    "MoveFileWithProgressTransactedW",
-                ],
-                "args": [("from", "ExistingFileName"), ("to", "NewFileName")],
-            },
-            {
-                "event": "copy",
-                "object": "file",
-                "apis": ["CopyFileA", "CopyFileW", "CopyFileExW", "CopyFileExA"],
-                "args": [("from", "ExistingFileName"), ("to", "NewFileName")],
-            },
-            {
-                "event": "delete",
-                "object": "file",
-                "apis": ["DeleteFileA", "DeleteFileW", "NtDeleteFile"],
-                "args": [("file", "FileName")],
-            },
-            {
-                "event": "delete",
-                "object": "dir",
-                "apis": ["RemoveDirectoryA", "RemoveDirectoryW"],
-                "args": [("file", "DirectoryName")],
-            },
-            {
-                "event": "create",
-                "object": "dir",
-                "apis": ["CreateDirectoryW", "CreateDirectoryExW"],
-                "args": [("file", "DirectoryName")],
-            },
-            {
-                "event": "write",
-                "object": "file",
-                "apis": ["URLDownloadToFileW", "URLDownloadToFileA"],
-                "args": [("file", "FileName")],
-            },
-            {
-                "event": "read",
-                "object": "file",
-                "apis": [
-                    "NtReadFile",
-                ],
-                "args": [("file", "HandleName")],
-            },
-            {
-                "event": "write",
-                "object": "file",
-                "apis": [
-                    "NtWriteFile",
-                ],
-                "args": [("file", "HandleName")],
-            },
-            {
-                "event": "execute",
-                "object": "file",
-                "apis": [
-                    "CreateProcessAsUserA",
-                    "CreateProcessAsUserW",
-                    "CreateProcessA",
-                    "CreateProcessW",
-                    "NtCreateProcess",
-                    "NtCreateProcessEx",
-                ],
-                "args": [("file", "FileName")],
-            },
-            {
-                "event": "execute",
-                "object": "file",
-                "apis": [
-                    "CreateProcessInternalW",
-                    "CreateProcessWithLogonW",
-                    "CreateProcessWithTokenW",
-                ],
-                "args": [("file", "CommandLine")],
-            },
-            {
-                "event": "execute",
-                "object": "file",
-                "apis": [
-                    "ShellExecuteExA",
-                    "ShellExecuteExW",
-                ],
-                "args": [("file", "FilePath")],
-            },
-            {
-                "event": "load",
-                "object": "library",
-                "apis": ["LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW", "LdrLoadDll", "LdrGetDllHandle"],
-                "args": [("file", "FileName"), ("pathtofile", "PathToFile"), ("moduleaddress", "BaseAddress")],
-            },
-            {
-                "event": "findwindow",
-                "object": "windowname",
-                "apis": ["FindWindowA", "FindWindowW", "FindWindowExA", "FindWindowExW"],
-                "args": [("classname", "ClassName"), ("windowname", "WindowName")],
-            },
-            {
-                "event": "write",
-                "object": "registry",
-                "apis": ["RegSetValueExA", "RegSetValueExW"],
-                "args": [("regkey", "FullName"), ("content", "Buffer")],
-            },
-            {
-                "event": "write",
-                "object": "registry",
-                "apis": ["RegCreateKeyExA", "RegCreateKeyExW"],
-                "args": [("regkey", "FullName")],
-            },
-            {
-                "event": "read",
-                "object": "registry",
-                "apis": [
-                    "RegQueryValueExA",
-                    "RegQueryValueExW",
-                ],
-                "args": [("regkey", "FullName"), ("content", "Data")],
-            },
-            {
-                "event": "read",
-                "object": "registry",
-                "apis": ["NtQueryValueKey"],
-                "args": [("regkey", "FullName"), ("content", "Information")],
-            },
-            {
-                "event": "delete",
-                "object": "registry",
-                "apis": ["RegDeleteKeyA", "RegDeleteKeyW", "RegDeleteValueA", "RegDeleteValueW", "NtDeleteValueKey"],
-                "args": [("regkey", "FullName")],
-            },
-            {
-                "event": "create",
-                "object": "windowshook",
-                "apis": ["SetWindowsHookExA"],
-                "args": [("id", "HookIdentifier"), ("moduleaddress", "ModuleAddress"), ("procedureaddress", "ProcedureAddress")],
-            },
-            {
-                "event": "start",
-                "object": "service",
-                "apis": ["StartServiceA", "StartServiceW"],
-                "args": [("service", "ServiceName")],
-            },
-            {
-                "event": "modify",
-                "object": "service",
-                "apis": ["ControlService"],
-                "args": [("service", "ServiceName"), ("controlcode", "ControlCode")],
-            },
-            {"event": "delete", "object": "service", "apis": ["DeleteService"], "args": [("service", "ServiceName")]},
-        ]
-
         # Not sure I really want this, way too noisy anyway and doesn't bring much value.
         # if self.details:
         #    gendata += [{"event" : "get",
@@ -935,7 +954,7 @@ class Enhanced:
         #           "args": [("name", "FunctionName"), ("ordinal", "Ordinal")]
         #          },]
 
-        event = _generic_handle(self, gendat, call)
+        event = _generic_handle(self, _ENHANCED_GENDAT, call)
         args = _load_args(call)
 
         if event:

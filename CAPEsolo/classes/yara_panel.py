@@ -279,29 +279,40 @@ class YaraPanel(wx.Panel, KeyEventHandlerMixin):
         event.Skip()
 
     def ProcessYara(self, event):
-        try:
-            self.targetFile = self.parent.targetFile
-            self.yara.Scan(str(self.targetFile))
-        except FileNotFoundError:
-            print("Target not found. This may be normal.")
+        self.GetMainFrame().RunSteps([self.YaraStep()])
 
-        self.yara.ScanPayloads()
-        for filehits in self.yara.yara_results:
-            for file, hits in filehits.items():
-                self.AddHits(file, hits)
+    def YaraStep(self):
+        """The scan as a (label, compute, render) step: scanning the target and payloads, and
+        collecting the hits (which feeds configHits), run on the processing worker; the
+        filter and grid are built on the GUI thread."""
 
-        # Same records json_report.YaraHits writes into report.json, so a signature sees the
-        # same hits whether it runs here or in the report.
-        self.results["yara"] = self.hits
+        def compute():
+            try:
+                self.targetFile = self.parent.targetFile
+                self.yara.Scan(str(self.targetFile))
+            except FileNotFoundError:
+                print("Target not found. This may be normal.")
 
-        self.LoadFileFilter()
-        # Shown before the rows go in, so the Layout that AddTableData ends with is the one
-        # that sizes it, matching SignaturesPanel.
-        self.grid.Show()
-        self.AddTableData()
-        self.UpdatePayloadCapeTypes()
-        self.yaraButton.Disable()
-        self.yaraComplete = True
+            self.yara.ScanPayloads()
+            for filehits in self.yara.yara_results:
+                for file, hits in filehits.items():
+                    self.AddHits(file, hits)
+
+        def render(_):
+            # Same records json_report.YaraHits writes into report.json, so a signature sees
+            # the same hits whether it runs here or in the report.
+            self.results["yara"] = self.hits
+
+            self.LoadFileFilter()
+            # Shown before the rows go in, so the Layout that AddTableData ends with is the
+            # one that sizes it, matching SignaturesPanel.
+            self.grid.Show()
+            self.AddTableData()
+            self.UpdatePayloadCapeTypes()
+            self.yaraButton.Disable()
+            self.yaraComplete = True
+
+        return ("yara", compute, render)
 
     def AddPayload(self, relPath):
         """Scan a payload a config parser produced and append its hits to the report.

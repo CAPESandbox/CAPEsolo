@@ -1,7 +1,7 @@
 """Build the results["network"] summary CAPEsolo's signatures and reports expect.
 
-Nothing populated this key before, so the 14 network signatures that ship in
-signatures/community were loaded and evaluated on every run but could never match, and
+Nothing populated this key before, so the community network signatures were loaded and
+evaluated on every run but could never match, and
 neither report had a network section.
 
 Three sources feed it, matching what CAPEv2 merges in modules/processing/network.py
