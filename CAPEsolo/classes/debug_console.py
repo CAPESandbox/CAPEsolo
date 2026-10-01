@@ -344,6 +344,9 @@ class ConsolePanel(wx.Panel):
         self.patchHistory: list[PatchEntry] = []
         self.patchHistoryByAddr: dict[int, list[PatchEntry]] = defaultdict(list)
         self.dumpFilePath = None
+        # A file dump in progress: capemon serves at most MAX_MEM_REQUEST bytes per request,
+        # so larger dumps go out as consecutive requests and are written once all arrive.
+        self.fileDump = None
         self.assembler = None
         self.firstBreak = True
         self.CMD_PAGE_MAP = None
@@ -703,7 +706,13 @@ class ConsolePanel(wx.Panel):
 
             self.dumpFilePath = fileDialog.GetPath()
 
-        self.SendCommand(CMD_MEM_DUMP, f"{addr:#x}|{size:#x}", tag=self.NextTag(TAG_FILE))
+        self.fileDump = {"next": addr, "end": addr + size, "chunks": []}
+        self.RequestFileDumpChunk()
+
+    def RequestFileDumpChunk(self):
+        dump = self.fileDump
+        want = min(dump["end"] - dump["next"], MAX_MEM_REQUEST)
+        self.SendCommand(CMD_MEM_DUMP, f"{dump['next']:#x}|{want:#x}", tag=self.NextTag(TAG_FILE))
 
     def WriteMemToFile(self, data):
         try:
@@ -1994,6 +2003,7 @@ class ConsolePanel(wx.Panel):
             log.debug(f"[DEBUG] MemDump returned {data} for 0x{addr:X}.")
             if purpose == TAG_FILE:
                 self.AppendConsole(f"Memory dump to file failed: {addr:#x} is {data}")
+                self.fileDump = None
 
             # The panel's dump is re-issued for the same address on every break, and the
             # address only moves when a dump succeeds, so refreshing here looped: the refresh
@@ -2008,8 +2018,20 @@ class ConsolePanel(wx.Panel):
             return
 
         if purpose == TAG_FILE:
-            if self.dumpFilePath:
-                self.WriteMemToFile(data)
+            dump = self.fileDump
+            if dump is None or not self.dumpFilePath:
+                return
+            if data.startswith("Failed"):
+                self.AppendConsole(f"Memory dump to file failed at {addr:#x}: {data}")
+                self.fileDump = None
+                return
+            dump["chunks"].append(data)
+            dump["next"] += len(data) // 2
+            if dump["next"] < dump["end"] and data:
+                self.RequestFileDumpChunk()
+            else:
+                self.fileDump = None
+                self.WriteMemToFile("".join(dump["chunks"]))
 
             return
 

@@ -336,7 +336,7 @@ def test_config_prefers_explicit_over_environment(monkeypatch):
     assert rv.AIConfig().model == "claude-sonnet-5"
     assert rv.AIConfig(api_key="explicit").api_key == "explicit"
     monkeypatch.delenv("ANTHROPIC_MODEL")
-    assert rv.AIConfig().model == rv.DEFAULT_MODEL == "claude-opus-5"
+    assert rv.AIConfig().model == rv.DEFAULT_MODEL == "claude-opus-5-5"
 
 
 def test_missing_sdk_explains_itself(monkeypatch):

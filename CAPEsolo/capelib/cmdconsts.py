@@ -23,6 +23,12 @@ CMD_EXPORTS = "EX"
 CMD_SET_REGISTER = "SR"
 CMD_NOP_INSTRUCTION = "NI"
 CMD_PATCH_BYTES = "PB"
+CMD_DUMP_REGION = "DR"
+CMD_TRACE = "TS"
+
+# The most one memory-dump request may ask for: capemon rejects larger ones (MAX_MD_SIZE in
+# capemon's CAPE/Solo.c; 2 KB in monitors built before it), so bigger reads are split.
+MAX_MEM_REQUEST = 0x4000
 
 CMD_EXECUTION = (
     CMD_STEP_INTO,

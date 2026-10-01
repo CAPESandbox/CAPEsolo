@@ -1093,6 +1093,48 @@ class StartPanel(wx.Panel):
         self.enforceTimeout = self.enforceTimeoutCheckbox.GetValue()
 
     def OnAnalyzerComplete(self, event):
+        mainFrame = self.GetMainFrame()
+        if mainFrame.processing:
+            # A tab the user started by hand is still running. RunSteps would refuse the job
+            # below, and the run's files would then never be collected; try again shortly.
+            # None, not event: wx may destroy a posted event once its handler returns.
+            wx.CallLater(500, self.OnAnalyzerComplete, None)
+            return
+
+        if self.dbgConsole:
+            self.log("Shutting down debug console.")
+            self.dbgConsole.shutdown()
+
+        outcome = {}
+
+        def compute():
+            outcome["warnings"] = self.FinishRun()
+
+        def done(failed):
+            mainFrame.statusBar.Finish("Analysis complete")
+            mainFrame.extendTimeoutBtn.Disable()
+            self.reportsBtn.Enable()
+            warnings = outcome.get("warnings") or []
+            if failed:
+                mainFrame.statusBar.SetMessage("Analysis complete - finishing the run failed, see the analysis log")
+            elif warnings:
+                mainFrame.statusBar.SetMessage(
+                    f"Analysis complete - {len(warnings)} capture warning(s), see {CAPTURE_FILE}"
+                )
+            self.SetAnalysisControls(running=False)
+            if self.autoProcess.GetValue():
+                self.AutoProcessTabs()
+
+        # Collecting the run's files, waiting for the uploads to land and draining the result
+        # server take seconds, and used to freeze the window at the end of every run.
+        mainFrame.RunSteps([("run end", compute, None)], onDone=done)
+        return True
+
+    def FinishRun(self):
+        """Collect the run's files and shut the run down; returns the capture warnings.
+
+        Runs on the processing worker: no widget is touched here (self.log is thread safe).
+        """
         from CAPEsolo.analyzer import (
             INJECT_LIST,
             Files,
@@ -1101,10 +1143,6 @@ class StartPanel(wx.Panel):
             traceback,
             upload_files,
         )
-
-        if self.dbgConsole:
-            self.log("Shutting down debug console.")
-            self.dbgConsole.shutdown()
 
         files = Files()
         files.dump_files()
@@ -1123,8 +1161,6 @@ class StartPanel(wx.Panel):
                 self.log(f"Failed to upload {folder} files:\n{traceback.format_exc()}")
 
         self.WaitForUploads(pending)
-        self.GetMainFrame().statusBar.Finish("Analysis complete")
-        self.GetMainFrame().extendTimeoutBtn.Disable()
         self.log("Shutting down")
         try:
             if hasattr(self.analyzer, "command_pipe"):
@@ -1140,7 +1176,6 @@ class StartPanel(wx.Panel):
 
             self.log("Run completed")
             self.resultserver.shutdown_server()
-            self.reportsBtn.Enable()
         except Exception:
             self.log(traceback.format_exc())
 
@@ -1151,15 +1186,7 @@ class StartPanel(wx.Panel):
         warnings = capture.get("warnings") or []
         for warning in warnings:
             self.log(f"Capture: {warning}")
-        if warnings:
-            self.GetMainFrame().statusBar.SetMessage(
-                f"Analysis complete - {len(warnings)} capture warning(s), see {CAPTURE_FILE}"
-            )
-
-        self.SetAnalysisControls(running=False)
-        if self.autoProcess.GetValue():
-            self.AutoProcessTabs()
-        return True
+        return warnings
 
     def AutoProcessTabs(self):
         """Populate the result tabs in dependency order after a run so the user need not

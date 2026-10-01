@@ -6,11 +6,14 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import shutil
 import sys
 import threading
+import time
 import traceback
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,10 +27,12 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_CALL_STACK,
     CMD_CONTINUE,
     CMD_DELETE_BREAKPOINT,
+    CMD_DUMP_REGION,
     CMD_MEM_DUMP,
     CMD_MOD_FLAG,
     CMD_MODULE_LIST,
     CMD_NOP_INSTRUCTION,
+    CMD_PAGE_LOAD,
     CMD_PATCH_BYTES,
     CMD_REG_UPDATE,
     CMD_RUN_UNTIL,
@@ -38,12 +43,14 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_STEP_OUT,
     CMD_STEP_OVER,
     CMD_THREADS,
+    CMD_TRACE,
 )
 from CAPEsolo.capelib.config_paths import config_paths
 from CAPEsolo.capelib.resultserver import ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
 from CAPEsolo.capelib.utils import LoadFilesJson
 from CAPEsolo.classes.html_report import ReportHTML
+from CAPEsolo.capelib import result_queries
 from CAPEsolo.classes.json_report import GetResults, WriteJsonFile
 from CAPEsolo.lib.common.hashing import hash_file
 from CAPEsolo.utils.update_yara import Update
@@ -67,6 +74,8 @@ MAX_TIMEOUT_SECONDS = 14400
 MAX_OPTIONS_LENGTH = 8192
 IDBG_TIMEOUT_SECONDS = 14400
 DBG_DISASM_WINDOW = 8
+# How long dump_region waits for the analyzer to upload the monitor's payload.
+DBG_DUMP_UPLOAD_WAIT = 10
 DBG_STEP_COMMANDS = {
     "into": CMD_STEP_INTO,
     "over": CMD_STEP_OVER,
@@ -1050,6 +1059,90 @@ class AnalysisJobManager:
         completed, msg = report.run(analysis_dir, str(CAPESOLO_ROOT), results)
         return {"found": True, "ready": True, "state": state, "completed": completed, "message": str(msg) if msg else ""}
 
+    def _query_results(self, job_id: Any) -> tuple[Any, dict[str, Any] | None]:
+        """(results, None) for a completed job, else (None, the error to return).
+
+        Whichever cached report exists is used as is: the string-free copy _compute_results
+        derives from the full one is a deep copy per call, too much for a query tool.
+        """
+        valid, job_id, error = self._validate_job_id(job_id)
+        if not valid:
+            return None, {"found": False, "error": error}
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None, {"found": False, "error": f"Job not found: {job_id}"}
+            state = job.get("state")
+            cached = job.get("_results_full") or job.get("_results_nostrings")
+            target_file = job.get("target_file")
+        if state != "completed":
+            return None, {"found": True, "ready": False, "state": state}
+        if cached is not None:
+            return cached, None
+        if not target_file:
+            return None, {"found": True, "ready": False, "state": state, "error": "No target_file recorded for job"}
+        return self._compute_results(job_id, include_strings=False), None
+
+    def query_calls(
+        self, job_id: str, api: str = "", tid: str = "", process: str = "", argument: str = "",
+        category: str = "all", regex: bool = False, offset: int = 0, limit: int = 100,
+    ) -> dict[str, Any]:
+        results, error = self._query_results(job_id)
+        if error:
+            return error
+        if not isinstance(offset, int) or offset < 0:
+            return {"found": True, "ready": True, "error": "offset must be a non-negative integer."}
+        if not isinstance(limit, int) or not 1 <= limit <= 1000:
+            return {"found": True, "ready": True, "error": "limit must be an integer from 1 to 1000."}
+        try:
+            page = result_queries.QueryCalls(
+                results, api=api, tid=tid, process=process, argument=argument,
+                category=category, regex=regex, offset=offset, limit=limit,
+            )
+        except re.error as e:
+            return {"found": True, "ready": True, "error": f"Invalid regular expression: {e}"}
+        return {"found": True, "ready": True, **page}
+
+    def process_view(self, job_id: str, pid: Any) -> dict[str, Any]:
+        results, error = self._query_results(job_id)
+        if error:
+            return error
+        view = result_queries.ProcessView(results, pid)
+        if view is None:
+            pids = [p.get("process_id") for p in result_queries.Processes(results)]
+            return {"found": True, "ready": True, "error": f"No process {pid} in this analysis.", "pids": pids}
+        return {"found": True, "ready": True, "process": view}
+
+    def signature_evidence(self, job_id: str, name: str = "") -> dict[str, Any]:
+        results, error = self._query_results(job_id)
+        if error:
+            return error
+        signatures = result_queries.SignatureEvidence(results, name)
+        if name and not signatures:
+            matched = [sig.get("name") for sig in results.get("signatures") or []]
+            return {"found": True, "ready": True, "error": f"Signature {name} did not match.", "matched": matched}
+        return {"found": True, "ready": True, "signatures": signatures}
+
+    def diff_results(self, job_id: str, other: str) -> dict[str, Any]:
+        results, error = self._query_results(job_id)
+        if error:
+            return error
+        if not isinstance(other, str) or not other.strip():
+            return {"found": True, "ready": True, "error": "other must be a job_id, a report.json path or a bundle .zip path."}
+        other = other.strip()
+        with self._lock:
+            isJob = other in self._jobs
+        if isJob:
+            otherResults, otherError = self._query_results(other)
+            if otherError:
+                return {"found": True, "ready": True, "error": f"other job: {otherError.get('error') or otherError.get('state')}"}
+        else:
+            try:
+                otherResults = result_queries.LoadReport(other)
+            except (OSError, ValueError, zipfile.BadZipFile) as e:
+                return {"found": True, "ready": True, "error": f"Could not read {other}: {e}"}
+        return {"found": True, "ready": True, "a": job_id, "b": other, "diff": result_queries.DiffResults(results, otherResults)}
+
     def _resolve_upload_path(self, filename: Any, destination: Any) -> tuple[Path | None, dict[str, Any] | None]:
         if not isinstance(destination, str) or destination.strip().lower() not in UPLOAD_DESTINATIONS:
             return None, {"ok": False, "error": f"destination must be one of {', '.join(UPLOAD_DESTINATIONS)}."}
@@ -1237,7 +1330,13 @@ class AnalysisJobManager:
         payload = session.WaitForBreak(timeout)
         if payload is None:
             return {"ok": True, "state": "running", "message": "No break reported within the timeout."}
-        return {"ok": True, "state": "halted", "cip": self._format_cip(session), "payload": payload}
+        return {
+            "ok": True,
+            "state": "halted",
+            "cip": self._format_cip(session),
+            "tid": self._dbg.ParseBreakTid(payload),
+            "payload": payload,
+        }
 
     def debugger_registers(self) -> dict[str, Any]:
         session, error = self._require_debugger()
@@ -1275,20 +1374,30 @@ class AnalysisJobManager:
         if error:
             return error
 
-        # Memory dumps carry a request tag that capemon echoes back; see ParseMemDump. This
-        # path is synchronous so a constant tag is enough, but it must be present or the
-        # monitor parses the address as the tag and the size as the address.
-        payload, error = self._command(session, CMD_MEM_DUMP, f"{MCP_DUMP_TAG}|{addr:#x}|{size:#x}")
-        if error:
-            return error
+        # capemon serves at most MAX_MEM_REQUEST bytes per request (it rejected everything larger,
+        # so reads above 2 KB used to fail), so a larger read goes out as consecutive requests.
+        # Each carries a request tag capemon echoes back; see ParseMemDump. This path is
+        # synchronous so a constant tag is enough, but it must be present or the monitor parses
+        # the address as the tag and the size as the address.
+        chunks, cursor, end = [], addr, addr + size
+        while cursor < end:
+            want = min(end - cursor, self._dbg.MAX_MEM_REQUEST)
+            payload, error = self._command(session, CMD_MEM_DUMP, f"{MCP_DUMP_TAG}|{cursor:#x}|{want:#x}")
+            if error:
+                return {**error, "bytes_read": cursor - addr}
 
-        dumpAddr, data = self._dbg.ParseMemDump(payload)
-        if dumpAddr is None:
-            return {"ok": False, "error": f"Unexpected memory dump payload: {payload[:64]}"}
-        if self._dbg.IsFailure(data):
-            return {"ok": False, "error": data}
+            dumpAddr, data = self._dbg.ParseMemDump(payload)
+            if dumpAddr is None:
+                return {"ok": False, "error": f"Unexpected memory dump payload: {payload[:64]}", "bytes_read": cursor - addr}
+            if self._dbg.IsFailure(data):
+                return {"ok": False, "error": data, "bytes_read": cursor - addr}
+            if not data:
+                break
+            chunks.append(data)
+            cursor += len(data) // 2
 
-        return {"ok": True, "address": f"{dumpAddr:#x}", "size": len(data) // 2, "hex": data}
+        data = "".join(chunks)
+        return {"ok": True, "address": f"{addr:#x}", "size": len(data) // 2, "hex": data}
 
     def debugger_disassemble(self, address: Any = None, count: Any = 32) -> dict[str, Any]:
         session, error = self._require_debugger()
@@ -1346,7 +1455,13 @@ class AnalysisJobManager:
             return {"ok": False, "error": payload}
 
         session.UpdateCip(payload)
-        result = {"ok": True, "state": "halted", "cip": self._format_cip(session), "payload": payload}
+        result = {
+            "ok": True,
+            "state": "halted",
+            "cip": self._format_cip(session),
+            "tid": self._dbg.ParseBreakTid(payload),
+            "payload": payload,
+        }
 
         registers = self._collect_registers(session)
         if registers.get("ok"):
@@ -1373,6 +1488,160 @@ class AnalysisJobManager:
         if addr is None:
             return {"ok": False, "error": f"Invalid address: {address}"}
         return self.debugger_execute(CMD_RUN_UNTIL, f"{addr:#X}", timeout_seconds=timeout_seconds)
+
+    def _load_page(self, session: Any, pageBase: int) -> bytes | None:
+        """One page of the target's memory, or None where it cannot be read."""
+        payload, error = self._command(session, CMD_PAGE_LOAD, f"{MCP_DUMP_TAG}|{pageBase:#x}")
+        if error:
+            return None
+        _base, data = self._dbg.ParsePageLoad(payload)
+        return data
+
+    def debugger_dump_region(self, address: Any, size: Any, type_string: str = "") -> dict[str, Any]:
+        """Save a region of the halted target's memory as a CAPE payload of this analysis."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        addr = self._dbg.ParseAddress(address)
+        if addr is None:
+            return {"ok": False, "error": f"Invalid address: {address}"}
+        size, error = self._validate_count(size, self._dbg.MAX_DUMP_SIZE, "size")
+        if error:
+            return error
+
+        with self._lock:
+            job = self._jobs.get(self._active_job_id) if self._active_job_id else None
+            analysis_dir = Path(job["analysis_dir"]) if job and job.get("analysis_dir") else self.analysis_dir
+
+        # One DR command: the monitor copies the range in-process while the thread is halted and
+        # hands it over as a normal CAPE payload (FILE_CAPE), so it arrives with the right pid
+        # and lands in files.json like any monitor dump. Unreadable pages come back zero-filled.
+        typeString = (type_string or "").strip()
+        data = f"{MCP_DUMP_TAG}|{addr:#x}|{size:#x}" + (f"|{typeString}" if typeString else "")
+        payload = session.SendCommand(CMD_DUMP_REGION, data, self._dbg.DEFAULT_COMMAND_TIMEOUT)
+        if payload is None:
+            return {"ok": False, "error": f"Debugger command {CMD_DUMP_REGION} timed out."}
+        reply = self._dbg.ParseDumpRegion(payload)
+        if not reply["ok"]:
+            return {"ok": False, "error": reply["error"]}
+
+        # The monitor writes the payload in the guest results folder and the analyzer uploads
+        # it as CAPE/<sha256>. Both run on this machine, so hash the file and wait for the copy.
+        result = {
+            "ok": True,
+            "address": f"{addr:#x}",
+            "size": size,
+            "bytes_written": reply["written"],
+            "bytes_unreadable": reply["unreadable"],
+            "guest_path": reply["path"],
+        }
+        try:
+            sha256 = hashlib.sha256(Path(reply["path"]).read_bytes()).hexdigest()
+        except OSError as e:
+            result["upload"] = f"Could not read {reply['path']} to confirm the upload: {e}"
+            return result
+
+        dest = analysis_dir / "CAPE" / sha256
+        deadline = time.monotonic() + DBG_DUMP_UPLOAD_WAIT
+        while not dest.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        result.update({"sha256": sha256, "path": str(dest), "uploaded": dest.exists()})
+        # A report already built for this job predates the payload; build it again next time.
+        with self._lock:
+            if job is not None:
+                job.pop("_results_full", None)
+                job.pop("_results_nostrings", None)
+        return result
+
+    def debugger_trace(
+        self, max_steps: Any = 1000, stop_at: Any = "", step_over_calls: bool = False,
+        stop_on_module_change: bool = False, last: Any = 32, timeout_seconds: Any = None,
+    ) -> dict[str, Any]:
+        """Single-step from the current instruction, recording the path, then summarise it."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        maxSteps, error = self._validate_count(max_steps, self._dbg.MAX_TRACE_STEPS, "max_steps")
+        if error:
+            return error
+        last, error = self._validate_count(last, self._dbg.MAX_INSTRUCTIONS, "last")
+        if error:
+            return error
+        stopAddr = None
+        if stop_at not in (None, ""):
+            stopAddr = self._dbg.ParseAddress(stop_at)
+            if stopAddr is None:
+                return {"ok": False, "error": f"Invalid stop_at address: {stop_at}"}
+        timeout, error = self._validate_timeout(timeout_seconds, self._dbg.DEFAULT_BREAK_TIMEOUT)
+        if error:
+            return error
+
+        if not session.bits or session.cip is None:
+            registers = self._collect_registers(session)
+            if not registers.get("ok"):
+                return registers
+        modules = self.debugger_list_modules().get("modules") or []
+        start = session.cip
+
+        # One TS command: the monitor single-steps the halted thread in-process and replies, in
+        # place of the next break, with the executed CIPs once it stops - then the session
+        # carries on halted, as after a step. Flag 1 steps over CALLs; flag 2 stops on leaving
+        # the allocation the trace started in (an image or shellcode alike).
+        flags = (1 if step_over_calls else 0) | (2 if stop_on_module_change else 0)
+        began = time.monotonic()
+        payload = session.SendCommand(CMD_TRACE, f"{MCP_DUMP_TAG}|{maxSteps}|{stopAddr or 0:#x}|{flags}", timeout)
+        if payload is None or payload.startswith("TIMEOUT"):
+            return {"ok": True, "state": "running", "stop_reason": "running",
+                    "message": "The trace did not report back within the timeout (a stepped-over call may not have returned)."}
+        trace = self._dbg.ParseTrace(payload)
+        if not trace["ok"]:
+            return {"ok": False, "error": trace["error"]}
+        session.cip = trace["halt"]
+
+        # The path is decoded afterwards from the code as it stands at the halt, a page read per
+        # page touched; code that rewrote itself during the trace decodes as it is now.
+        pages = {}
+
+        def BytesAt(address, count):
+            out = b""
+            while len(out) < count:
+                cursor = address + len(out)
+                base = cursor - cursor % self._dbg.PAGE_SIZE
+                if base not in pages:
+                    pages[base] = self._load_page(session, base)
+                data = pages[base]
+                offset = cursor - base
+                if not data or offset >= len(data):
+                    break
+                out += data[offset:offset + count - len(out)]
+            return out
+
+        decoded = {}
+        steps = []
+        for cip in trace["cips"]:
+            if cip not in decoded:
+                ins = self._dbg.Disassemble(cip, BytesAt(cip, self._dbg.MAX_INSTRUCTION_LEN), session.bits, 1)
+                decoded[cip] = (ins[0]["text"], len(ins[0]["bytes"]) // 2) if ins else (None, None)
+            text, length = decoded[cip]
+            over = bool(step_over_calls and text and text.upper().startswith("CALL"))
+            steps.append({"address": cip, "length": length, "text": text, "module": self._dbg.ModuleOf(modules, cip), "over": over})
+
+        result = {
+            "ok": True,
+            "state": "halted",
+            "stop_reason": trace["reason"],
+            "steps": trace["steps"],
+            "steps_recorded": len(steps),
+            "truncated": trace["truncated"],
+            "elapsed_seconds": round(time.monotonic() - began, 2),
+            "start": f"{start:#x}" if start is not None else None,
+            "stopped_at": {"cip": f"{trace['halt']:#x}", "module": self._dbg.ModuleOf(modules, trace["halt"]), "tid": trace["tid"]},
+            "pages_read": len(pages),
+        }
+        result.update(self._dbg.SummariseTrace(steps, last))
+        return result
 
     def debugger_set_breakpoint(self, address: Any, slot: str = "next", type: str = "x", size: Any = 1) -> dict[str, Any]:
         addr = self._dbg.ParseAddress(address)
@@ -1592,6 +1861,49 @@ if mcp:
 
 
     @mcp.tool()
+    def capesolo_query_calls(
+        job_id: str, api: str = "", tid: str = "", process: str = "", argument: str = "",
+        category: str = "all", regex: bool = False, offset: int = 0, limit: int = 100,
+    ) -> dict[str, Any]:
+        """API calls of a finished job that match a filter, across every process, paged.
+
+        Every field given must match. api, process ("<pid> <name>") and argument (any
+        argument value) are case-insensitive substrings; tid is exact; with regex=True each is
+        a case-insensitive regular expression. category is a behaviour category or "all".
+        Returns total, and per call pid, process, tid, api, arguments and cid (its index in
+        the process, as signature evidence references it). limit is at most 1000.
+        """
+        return manager.query_calls(
+            job_id, api=api, tid=tid, process=process, argument=argument,
+            category=category, regex=regex, offset=offset, limit=limit,
+        )
+
+
+    @mcp.tool()
+    def capesolo_process_view(job_id: str, pid: str) -> dict[str, Any]:
+        """One process of a finished job: identity and command line, ancestors and children,
+        call counts by category and top APIs, the files, registry keys and network endpoints
+        its calls touched, and the signatures whose evidence names it."""
+        return manager.process_view(job_id, pid)
+
+
+    @mcp.tool()
+    def capesolo_signature_evidence(job_id: str, name: str = "") -> dict[str, Any]:
+        """Matched signatures of a finished job with their evidence; calls a signature marked
+        are resolved to the calls themselves. name narrows it to one signature."""
+        return manager.signature_evidence(job_id, name)
+
+
+    @mcp.tool()
+    def capesolo_diff_results(job_id: str, other: str) -> dict[str, Any]:
+        """What differs between a finished job and another run: other is a job_id from this
+        session, a report.json path, or a Zip Results bundle path. Compares signatures,
+        detections, yara hits, payload hashes, processes, network domains/hosts/HTTP, mutexes,
+        commands, written files and registry keys."""
+        return manager.diff_results(job_id, other)
+
+
+    @mcp.tool()
     def capesolo_get_job_log_tail(job_id: str, lines: int = 100) -> dict[str, Any]:
         return manager.get_job_log_tail(job_id=job_id, lines=lines)
 
@@ -1744,6 +2056,39 @@ if mcp:
     def capesolo_dbg_disassemble(address: str = "", count: int = 32) -> dict[str, Any]:
         """Disassemble instructions at address, defaulting to the current instruction pointer."""
         return manager.debugger_disassemble(address, count)
+
+
+    @mcp.tool()
+    def capesolo_dbg_dump_region(address: str, size: int, type_string: str = "") -> dict[str, Any]:
+        """Save a region of the halted target's memory as a CAPE payload of this analysis
+        (CAPE/<sha256> plus a files.json entry, with the target's pid), so the Payloads, Yara
+        and Configs processing examines it. The monitor copies it in-process in one command;
+        unreadable pages are zero-filled and counted. size is at most 16 MB. type_string labels
+        the payload's CAPE type ("|" becomes "/"). A report already built for the job is
+        dropped so the next one includes the payload."""
+        return manager.debugger_dump_region(address, size, type_string)
+
+
+    @mcp.tool()
+    def capesolo_dbg_trace(
+        max_steps: int = 1000, stop_at: str = "", step_over_calls: bool = False,
+        stop_on_module_change: bool = False, last: int = 32, timeout_seconds: float = 120,
+    ) -> dict[str, Any]:
+        """Single-step the halted thread from the current instruction, recording the executed
+        path, and return a summary: stop reason and step count, module transitions, unique
+        blocks and call targets with hit counts, and the last `last` instructions disassembled.
+
+        The monitor steps in-process in one command. It stops at stop_at, after max_steps (up
+        to 65536), on leaving the allocation it started in when stop_on_module_change is set,
+        on entering monitor code, or on a user breakpoint. step_over_calls runs each CALL
+        through without tracing it (needs a free hardware breakpoint slot; a call that never
+        returns leaves the thread running). Long paths are summarised from the first CIPs the
+        monitor could fit in its reply (truncated=true).
+        """
+        return manager.debugger_trace(
+            max_steps=max_steps, stop_at=stop_at, step_over_calls=step_over_calls,
+            stop_on_module_change=stop_on_module_change, last=last, timeout_seconds=timeout_seconds,
+        )
 
 
     @mcp.tool()

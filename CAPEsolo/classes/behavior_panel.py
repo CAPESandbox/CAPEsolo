@@ -1,3 +1,4 @@
+import re
 import textwrap
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import wx
 import wx.grid as gridlib
 
 from CAPEsolo.capelib.behavior import BehaviorAnalysis
+from CAPEsolo.capelib.call_filter import CallFilter, FilterCalls, ProcessLabel
 from CAPEsolo.capelib.utils import convert_to_printable
 
 from . import ui_kit as ui
@@ -31,9 +33,11 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.results = parent.results
         self.BindKeyEvents()
         self.behaviorComplete = False
-        self.mycalls = []
+        # The process picked in the tree, and the (process, call) pairs the filter leaves -
+        # computed once per filter change, so paging only slices it.
+        self.selectedProc = None
+        self.viewCalls = []
         self._rowCategories = []
-        self.filter = ""
         self.category = "all"
         self.numcalls = 0
         self.current_page = 1
@@ -119,27 +123,32 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         pane = collapsePane.GetPane()
         paneBox = wx.BoxSizer(wx.VERTICAL)
 
-        panehBox1 = wx.BoxSizer(wx.HORIZONTAL)
-
-        self.tidField = ui.Field(
-            pane, size=wx.Size(100, -1), style=wx.TE_PROCESS_ENTER
-        )
-        self.tid = self.tidField.ctrl
-        self.tidButton = ui.Button(pane, label="Filter Thread ID")
-        self.tidButton.Bind(wx.EVT_BUTTON, self.OnTidFilterButtonClick)
-
-        self.apiField = ui.Field(pane, style=wx.TE_PROCESS_ENTER)
-        self.api = self.apiField.ctrl
-        self.apiFilterButton = ui.Button(pane, label="Filter API")
-        self.apiFilterButton.Bind(wx.EVT_BUTTON, self.OnApiFilterButtonClick)
-
-        panehBox1.Add(self.tidField, flag=wx.ALL, border=dip(self, SP_XS))
-        panehBox1.Add(self.tidButton, flag=wx.ALL, border=dip(self, SP_XS))
-        self.tidButton.Disable()
-
-        panehBox1.Add(self.apiField, proportion=1, flag=wx.EXPAND | wx.ALL, border=dip(self, SP_XS))
-        panehBox1.Add(self.apiFilterButton, flag=wx.ALL, border=dip(self, SP_XS))
-        self.apiFilterButton.Disable()
+        # One filter bar: every field given must match, together with the category buttons
+        # below. Substring matches (TID exact) unless Regex is ticked; see capelib/call_filter.
+        panehBox1 = wx.WrapSizer(wx.HORIZONTAL)
+        self.filterFields = {}
+        for key, hint, width, tip in (
+            ("api", "API", 160, "API name contains (e.g. Reg matches every Reg* call)"),
+            ("tid", "TID", 80, "Thread ID, exact"),
+            ("process", "Process", 140, "PID or process name contains - searches every process, not only the selected one"),
+            ("argument", "Argument value", 220, "Any argument value contains - a path, registry key, URL..."),
+        ):
+            field = ui.Field(pane, hint=hint, size=wx.Size(width, -1), style=wx.TE_PROCESS_ENTER)
+            field.ctrl.SetToolTip(tip)
+            field.ctrl.Bind(wx.EVT_TEXT_ENTER, self.OnApplyFilter)
+            self.filterFields[key] = field.ctrl
+            panehBox1.Add(field, flag=wx.ALL, border=dip(self, SP_XS))
+        self.regexCheck = ui.Check(pane, label="Regex")
+        self.regexCheck.SetToolTip("Treat every field as a case-insensitive regular expression.")
+        panehBox1.Add(self.regexCheck, flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=dip(self, SP_XS))
+        self.applyFilterButton = ui.Button(pane, label="Filter")
+        self.applyFilterButton.Bind(wx.EVT_BUTTON, self.OnApplyFilter)
+        self.applyFilterButton.Disable()
+        panehBox1.Add(self.applyFilterButton, flag=wx.ALL, border=dip(self, SP_XS))
+        self.clearFilterButton = ui.Button(pane, label="Clear")
+        self.clearFilterButton.Bind(wx.EVT_BUTTON, self.OnClearFilter)
+        self.clearFilterButton.Disable()
+        panehBox1.Add(self.clearFilterButton, flag=wx.ALL, border=dip(self, SP_XS))
 
         panehBox2 = wx.WrapSizer(wx.HORIZONTAL)
 
@@ -156,8 +165,9 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         pane.SetSizer(paneBox)
         paneBox.Layout()
 
-        self.grid = CopyableGrid(self, 0, 8)
+        self.grid = CopyableGrid(self, 0, 9)
         columnLabels = [
+            "Process",
             "Time",
             "TID",
             "Caller",
@@ -178,7 +188,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         argsAttr = gridlib.GridCellAttr()
         argsAttr.SetAlignment(wx.ALIGN_LEFT, wx.ALIGN_CENTRE)
-        self.grid.SetColAttr(4, argsAttr)
+        self.grid.SetColAttr(5, argsAttr)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(False)
 
@@ -262,15 +272,50 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.current_page = 1
         self.AddTableData()
 
-    def OnTidFilterButtonClick(self, event):
-        self.filterKey = "thread_id"
-        self.filter = self.tid.GetValue()
-        self.AddTableData()
+    def OnApplyFilter(self, event):
+        self.ApplyFilter()
 
-    def OnApiFilterButtonClick(self, event):
-        self.filterKey = "api"
-        self.filter = self.api.GetValue()
-        self.AddTableData()
+    def OnClearFilter(self, event):
+        for ctrl in self.filterFields.values():
+            ctrl.SetValue("")
+        self.regexCheck.SetValue(False)
+        self.category = "all"
+        self.ApplyFilter()
+
+    def ApplyFilter(self):
+        """Recompute the calls on show from the filter bar, the category and the selection."""
+        try:
+            callFilter = CallFilter(
+                category=self.category,
+                regex=self.regexCheck.GetValue(),
+                **{key: ctrl.GetValue() for key, ctrl in self.filterFields.items()},
+            )
+        except re.error as e:
+            ui.message(f"Invalid regular expression: {e}", "Filter", wx.OK | wx.ICON_ERROR)
+            return
+        processes = (self.results.get("behavior") or {}).get("processes", [])
+        selected = self.selectedProc
+
+        def compute():
+            return FilterCalls(processes, callFilter, selected)
+
+        def render(calls):
+            self.viewCalls = calls
+            self.current_page = 1
+            if not self.grid.IsShown():
+                self.pagination_sizer.ShowItems(True)
+                self.grid.Show()
+                self.Layout()
+            self.AddTableData()
+            self.ApplyAlternateRowShading()
+
+        # Matching text across every call of a big analysis takes a while, so it runs on the
+        # processing worker. Only the category, or a job already running, stays here.
+        frame = self.GetMainFrame()
+        if callFilter.active and not frame.processing:
+            frame.RunSteps([("behavior filter", compute, render)])
+        else:
+            render(compute())
 
     def OnPaneChanged(self, event):
         self.Layout()
@@ -278,7 +323,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
     def OnApiCategoryClick(self, event):
         button = event.GetEventObject()
         self.category = button.GetLabel()
-        self.AddTableData()
+        self.ApplyFilter()
 
     def UpdateGenerateButtonState(self):
         logsDir = Path(self.analysisDir) / "logs"
@@ -321,8 +366,8 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.LoadResultCategories()
             self.BuildProcessTree()
             self.behaviorButton.Disable()
-            self.tidButton.Enable()
-            self.apiFilterButton.Enable()
+            self.applyFilterButton.Enable()
+            self.clearFilterButton.Enable()
             self.behaviorComplete = True
 
         return ("behavior", compute, render)
@@ -664,16 +709,8 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             f'Module Path: {data.get("module_path")}',
         ]
         self.resultsWindow.SetValue("\n".join(output))
-        mycalls = []
-        try:
-            for call in data.get("calls", []):
-                mycalls.append(call)
-        except Exception:
-            return
-
-        self.mycalls = mycalls
-        self.current_page = 1
-        self.AddTableData()
+        self.selectedProc = data
+        self.ApplyFilter()
 
     def ClearGrid(self):
         self.grid.ClearGrid()
@@ -682,50 +719,46 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             self.grid.DeleteRows(0, rows)
 
     def AddTableData(self):
-        if self.filter:
-            mycalls = self.GetCallsFilter()
-        else:
-            mycalls = self.GetCalls()
-
-        self.numcalls = len(mycalls)
+        self.numcalls = len(self.viewCalls)
         self.UpdatePaginationControls()
         self.ClearGrid()
 
         start_index = (self.current_page - 1) * self.items_per_page
         end_index = start_index + self.items_per_page
-        paginated_calls = mycalls[start_index:end_index]
+        paginated_calls = self.viewCalls[start_index:end_index]
 
         # Row -> category, kept so a later theme switch can recolour these rows from the
         # new palette instead of leaving them painted with whichever palette was active
         # when the page was built (see ApplyAlternateRowShading).
         self._rowCategories = []
 
-        for i, call in enumerate(paginated_calls):
+        for i, (proc, call) in enumerate(paginated_calls):
             category = call.get("category", "none")
             self._rowCategories.append(category)
             self.grid.AppendRows(1)
-            self.grid.SetCellValue(i, 0, call.get("timestamp", ""))
-            self.grid.SetCellValue(i, 1, str(call.get("thread_id", "")))
+            self.grid.SetCellValue(i, 0, ProcessLabel(proc))
+            self.grid.SetCellValue(i, 1, call.get("timestamp", ""))
+            self.grid.SetCellValue(i, 2, str(call.get("thread_id", "")))
 
             caller = f'{call.get("parentcaller", "")}\n{call.get("caller", "")}'
-            self.grid.SetCellValue(i, 2, caller)
+            self.grid.SetCellValue(i, 3, caller)
 
             apiName = call.get("api", "")
-            self.grid.SetCellValue(i, 3, apiName)
+            self.grid.SetCellValue(i, 4, apiName)
 
             args = self.GetArguments(call)
             arguments = "\n".join(args)
-            self.grid.SetCellValue(i, 4, arguments)
+            self.grid.SetCellValue(i, 5, arguments)
 
             status = "Success" if call.get("status", "") else "Failure"
-            self.grid.SetCellValue(i, 5, status)
+            self.grid.SetCellValue(i, 6, status)
 
             returnVal = str(call.get("return", ""))
             if call.get("pretty_return", ""):
                 returnVal = call.get("pretty_return")
 
-            self.grid.SetCellValue(i, 6, returnVal)
-            self.grid.SetCellValue(i, 7, str(call.get("repeated", "")))
+            self.grid.SetCellValue(i, 7, returnVal)
+            self.grid.SetCellValue(i, 8, str(call.get("repeated", "")))
 
             # A category missing from the palette gets no row colour at all. The old
             # fallback was pure white, which punched a hole in the dark grid; leaving the
@@ -766,20 +799,9 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
                 self.grid.SetRowAttr(row, attr)
         self.grid.ForceRefresh()
 
-    def GetCalls(self):
-        if self.category == "all":
-            return self.mycalls
-        return [
-            d for d in self.mycalls if "category" in d and d["category"] == self.category
-        ]
-
-    def GetCallsFilter(self):
-        key = self.filterKey
-        return [d for d in self.mycalls if key in d and d[key].lower() == self.filter.lower()]
-
     def UpdatePaginationControls(self):
         total_pages = (self.numcalls + self.items_per_page - 1) // self.items_per_page
-        self.page_label.SetLabel(f"Page {self.current_page} of {total_pages}")
+        self.page_label.SetLabel(f"Page {self.current_page} of {total_pages} ({self.numcalls} calls)")
         self.first_page_button.Enable(self.current_page > 1)
         self.prev_button.Enable(self.current_page > 1)
         self.next_button.Enable(self.current_page < total_pages)

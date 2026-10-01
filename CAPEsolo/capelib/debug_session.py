@@ -5,6 +5,7 @@ from typing import Any
 
 from distorm3 import Decode, Decode32Bits, Decode64Bits
 
+from CAPEsolo.capelib.cmdconsts import MAX_MEM_REQUEST  # noqa: F401 - read as self._dbg.MAX_MEM_REQUEST
 from CAPEsolo.classes.debug_pipe import CommandPipeHandler
 from CAPEsolo.lib.core.pipe import PipeDispatcher, PipeServer, disconnect_pipes
 
@@ -15,11 +16,16 @@ DEFAULT_COMMAND_TIMEOUT = 30
 DEFAULT_BREAK_TIMEOUT = 120
 MAX_TIMEOUT = 3600
 MAX_MEM_READ = 0x4000
+PAGE_SIZE = 0x1000
+MAX_DUMP_SIZE = 0x1000000
+# capemon's TS command takes at most 0x10000 steps per request.
+MAX_TRACE_STEPS = 0x10000
 MAX_INSTRUCTIONS = 256
 MAX_INSTRUCTION_LEN = 15
 FAILURE_TOKENS = ("Failed", "TIMEOUT", "UNREADABLE", "NODATA")
 CIP_RX = re.compile(r"\b([ER]IP):\s*([0-9A-Fa-f]+)")
 ADDRESS_RX = re.compile(r"0x[0-9a-fA-F]+")
+TID_RX = re.compile(r"\btid (\d+)")
 GENERAL_REG_RX = re.compile(r"\b([A-Z0-9]{2,3}):\s*([0-9A-Fa-f]{8,16})")
 XMM_REG_RX = re.compile(r"\bXMM(\d{1,2})\s*\.(Low|High)\s*:\s*([0-9A-Fa-f]{8,16})")
 
@@ -111,6 +117,153 @@ def ParseMemDump(payload: str) -> tuple[int | None, str]:
         return int(requestAddr, 16), data.strip()
     except ValueError:
         return None, ""
+
+
+def ParseBreakTid(payload: str | None) -> int | None:
+    """The thread id a break report ends with ("... 0x<cip> tid <n>"), where the monitor sends it."""
+    m = TID_RX.search(payload or "")
+    return int(m.group(1)) if m else None
+
+
+def ParseDumpRegion(payload: str) -> dict[str, Any]:
+    """A DR reply: `<tag>|OK|<guest path>|<bytes written>|<bytes unreadable>` or `<tag>|Failed ...`.
+
+    The failure carries the tag first, so IsFailure (which checks the start) cannot see it.
+    """
+    parts = payload.split("|", 4)
+    if len(parts) == 5 and parts[1] == "OK":
+        try:
+            return {"ok": True, "path": parts[2], "written": int(parts[3]), "unreadable": int(parts[4])}
+        except ValueError:
+            pass
+    error = parts[1] if len(parts) > 1 and parts[1].startswith("Failed") else payload
+    return {"ok": False, "error": error.strip()}
+
+
+TRACE_REASONS = {
+    "stop": "stop_at",
+    "max": "max_steps",
+    "module": "left_module",
+    "monitor": "entered_monitor",
+    "bp": "breakpoint",
+    "error": "error",
+}
+
+
+def ParseTrace(payload: str) -> dict[str, Any]:
+    """A TS reply: `<tag>|<reason>|<steps>|<cip>,<cip>,...|0x<halt cip>|<tid>`, or `<tag>|Failed ...`.
+
+    The CIPs are bare hex in execution order; the list ends with "..." when the monitor recorded
+    fewer than it executed (steps is always the true count).
+    """
+    parts = payload.split("|")
+    if len(parts) >= 2 and parts[1].startswith("Failed"):
+        return {"ok": False, "error": "|".join(parts[1:]).strip()}
+    if len(parts) != 6:
+        return {"ok": False, "error": f"Unexpected trace reply: {payload[:120]}"}
+
+    _tag, reason, steps, cips, halt, tid = parts
+    truncated = cips.endswith("...")
+    try:
+        addresses = [int(cip, 16) for cip in cips.split(",") if cip and cip != "..."]
+        return {
+            "ok": True,
+            "reason": TRACE_REASONS.get(reason, reason),
+            "steps": int(steps),
+            "cips": addresses,
+            "truncated": truncated,
+            "halt": int(halt, 16),
+            "tid": int(tid) if tid.strip().isdigit() else None,
+        }
+    except ValueError:
+        return {"ok": False, "error": f"Unexpected trace reply: {payload[:120]}"}
+
+
+def ParsePageLoad(payload: str) -> tuple[int | None, bytes | None]:
+    """Split a page-load payload, `<pagebase>|<tag>|<hex>`, into the page base and its bytes.
+
+    The bytes are None when the target reports the page UNREADABLE or NODATA. A readable page
+    can come back short: capemon stops at the end of the memory region.
+    """
+    parts = payload.split("|", 2)
+    if len(parts) < 3:
+        return None, None
+
+    try:
+        base = int(parts[0], 16)
+    except ValueError:
+        return None, None
+
+    data = parts[2].strip()
+    if not data or data in ("UNREADABLE", "NODATA"):
+        return base, None
+
+    try:
+        return base, bytes.fromhex(data)
+    except ValueError:
+        return base, None
+
+
+def ModuleOf(modules: list[dict[str, str]], addr: int) -> str:
+    """The name of the module containing *addr*, or "" outside every module."""
+    for mod in modules:
+        try:
+            base, size = int(mod["base"], 16), int(mod["size"], 16)
+        except (KeyError, ValueError):
+            continue
+        if base <= addr < base + size:
+            return mod.get("name", "")
+    return ""
+
+
+def SummariseTrace(steps: list[dict[str, Any]], lastCount: int = 32) -> dict[str, Any]:
+    """Summarise a recorded execution path.
+
+    *steps* holds one entry per executed instruction, in order: address (int), length (int or
+    None when the bytes were unreadable), text, and module. A block starts wherever execution
+    did not simply fall through from the previous instruction.
+    """
+    transitions, blocks, calls, steppedOver = [], {}, {}, {}
+    previous = None
+    for index, step in enumerate(steps):
+        addr = step["address"]
+        if previous is None or previous["length"] is None or previous["address"] + previous["length"] != addr:
+            blocks[addr] = blocks.get(addr, 0) + 1
+        if previous is not None:
+            if step["module"] != previous["module"]:
+                transitions.append({
+                    "step": index,
+                    "from": previous["module"] or "<unmapped>",
+                    "to": step["module"] or "<unmapped>",
+                    "address": f"{addr:#x}",
+                })
+            if (previous["text"] or "").upper().startswith("CALL"):
+                # Stepped into, the next address is the call's target; stepped over, it is only
+                # the return address, so the call site is what gets counted.
+                if previous.get("over"):
+                    site = previous["address"]
+                    steppedOver[site] = steppedOver.get(site, 0) + 1
+                else:
+                    calls[addr] = calls.get(addr, 0) + 1
+        previous = step
+
+    def ranked(counts):
+        return [
+            {"address": f"{addr:#x}", "hits": hits}
+            for addr, hits in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    return {
+        "module_transitions": transitions,
+        "unique_blocks": len(blocks),
+        "blocks": ranked(blocks)[:200],
+        "calls": ranked(calls)[:200],
+        "calls_stepped_over": ranked(steppedOver)[:200],
+        "last_instructions": [
+            {"address": f'{s["address"]:#x}', "module": s["module"], "text": s["text"]}
+            for s in steps[-lastCount:]
+        ],
+    }
 
 
 def ParseThreads(payload: str) -> list[dict[str, Any]]:

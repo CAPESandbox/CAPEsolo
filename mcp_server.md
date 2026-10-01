@@ -227,6 +227,10 @@ interrupted upload leaves a short file that the next `append=false` call overwri
 | `capesolo_get_job_status` | Job state: `queued`, `running`, `completed`, `failed`. |
 | `capesolo_cancel_job` | Request termination of a running job (the same signal as the GUI Kill button). |
 | `capesolo_get_results` | CAPEsolo JSON results using existing keys (`target`, `behavior`, `signatures`, `payloads`, `configs`, `detections`). Behaviour analysis, YARA and config extraction all happen here — nothing is analysed at submit time. Computed once per job and cached, so this and `capesolo_render_html_report` do not rescan. `include_strings=False` skips string extraction; `write_file=True` also saves `report.json` the way the GUI's JSON button does. |
+| `capesolo_query_calls` | API calls that match a filter, across every process, paged (`offset`, `limit` up to 1000). `api`, `process` (`"<pid> <name>"`) and `argument` (any argument value) are case-insensitive substrings; `tid` is exact; `regex=True` makes each a regular expression; `category` narrows to one behaviour category. These are the same rules as the Behavior tab's filter bar. Each call carries its `cid`, the index signature evidence refers to. |
+| `capesolo_process_view` | One process: command line, ancestors and children, call counts by category and top APIs, the files, registry keys and network endpoints its calls touched, and the signatures whose evidence names it. |
+| `capesolo_signature_evidence` | Matched signatures with their evidence. Calls a signature marked are resolved to the calls themselves. `name` narrows it to one signature. |
+| `capesolo_diff_results` | What differs between a job and `other`: another job from this session, a `report.json` path, or a Zip Results bundle. Compares signatures, detections, yara hits, payload hashes, processes, network domains/hosts/HTTP, mutexes, commands, and written files and keys. |
 | `capesolo_get_job_log_tail` | Last N lines of `analysis.log`. |
 | `capesolo_render_html_report` | Generate an HTML report from a completed analysis. |
 | `capesolo_list_payloads` | Payload artifacts from analysis output. |
@@ -261,8 +265,12 @@ Addresses are hex; the `0x` prefix is optional.
 | `capesolo_dbg_continue` | Resume until the next breakpoint or the timeout. |
 | `capesolo_dbg_run_until` | Resume until a given address. |
 
-These three return the new instruction pointer, the registers, and a short disassembly
-window in one response.
+These three return the new instruction pointer, the thread that broke (`tid`), the registers,
+and a short disassembly window in one response.
+
+| Tool | Description |
+|------|-------------|
+| `capesolo_dbg_trace` | Single-step the halted thread from the current instruction and return a summary of the path. The monitor steps in-process in one command (TS). It stops at `stop_at`, after `max_steps` (up to 65536), on leaving the allocation it started in (`stop_on_module_change`, which covers images and shellcode), on entering monitor code, or on a user breakpoint. The summary has the stop reason and step count, module transitions, unique blocks and call targets with hit counts, the last `last` instructions, and the halting `tid`. `step_over_calls` runs each CALL through untraced; this needs a free debug register, and a call that never returns leaves the thread running. Very long paths are summarised from the CIPs the monitor fits in its reply (`truncated`). |
 
 ### 6.2. Inspection
 
@@ -271,7 +279,8 @@ window in one response.
 | `capesolo_dbg_status` | Whether a session is active and where it is halted. |
 | `capesolo_dbg_get_registers` | Register set, parsed and raw. |
 | `capesolo_dbg_get_stack` | Stack window around the stack pointer. |
-| `capesolo_dbg_read_memory` | Up to 16384 bytes, returned as hex. |
+| `capesolo_dbg_read_memory` | Up to 16384 bytes, returned as hex, in one request. A read that hits unreadable memory reports `bytes_read`. |
+| `capesolo_dbg_dump_region` | Save up to 16 MB of the target's memory as a CAPE payload (`CAPE/<sha256>` plus a `files.json` entry, with the target's pid), so the Payloads, Yara and Configs processing examines it. The monitor copies the range in-process in one command (DR) while the thread is halted. Unreadable pages are zero-filled and counted; a wholly unreadable range fails. `type_string` labels the payload. The result reports the guest path, the sha256, and whether the upload has arrived. A report already built for the job is dropped so the next one includes the dump. |
 | `capesolo_dbg_disassemble` | Defaults to the current instruction pointer. |
 | `capesolo_dbg_list_modules` | Loaded modules with base addresses, sizes and paths. |
 | `capesolo_dbg_list_threads` | Threads with start addresses; the current thread is flagged. |

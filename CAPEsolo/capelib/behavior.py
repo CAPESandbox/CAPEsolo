@@ -1124,6 +1124,9 @@ class EncryptedBuffers:
 
     def __init__(self):
         self.bufs = []
+        # The buffers already recorded. The check used to be "buf not in self.bufs", a string
+        # against a list of dicts - never true - so every repeat of a buffer was kept.
+        self.seen = set()
 
     def get_argument(self, call, argname, strip=False):
         return next(
@@ -1145,7 +1148,8 @@ class EncryptedBuffers:
         if call["api"].startswith("SslEncryptPacket"):
             buf = self.get_argument(call, "Buffer", strip=True)
             bufsize = self.get_argument(call, "BufferSize")
-            if buf and buf not in self.bufs:
+            if buf and buf not in self.seen:
+                self.seen.add(buf)
                 self.bufs.append(
                     {
                         "process_name": process["process_name"],
@@ -1156,10 +1160,13 @@ class EncryptedBuffers:
                     }
                 )
 
-        if call["api"].startswith("CryptEncrypt"):
+        # Not CryptEncryptMessage, which has its own branch below: it matched this prefix too, so
+        # each such call was recorded twice, once mislabelled CryptEncrypt with no key.
+        if call["api"].startswith("CryptEncrypt") and not call["api"].startswith("CryptEncryptMessage"):
             key = self.get_argument(call, "CryptKey")
             buf = self.get_argument(call, "Buffer", strip=True)
-            if buf and buf not in self.bufs:
+            if buf and buf not in self.seen:
+                self.seen.add(buf)
                 self.bufs.append(
                     {
                         "process_name": process["process_name"],
@@ -1172,7 +1179,8 @@ class EncryptedBuffers:
 
         if call["api"].startswith("CryptEncryptMessage"):
             buf = self.get_argument(call, "Buffer", strip=True)
-            if buf and buf not in self.bufs:
+            if buf and buf not in self.seen:
+                self.seen.add(buf)
                 self.bufs.append(
                     {
                         "process_name": process["process_name"],
