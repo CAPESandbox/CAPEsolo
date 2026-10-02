@@ -284,14 +284,14 @@ and a short disassembly window in one response.
 | `capesolo_dbg_disassemble` | Defaults to the current instruction pointer. |
 | `capesolo_dbg_list_modules` | Loaded modules with base addresses, sizes and paths. |
 | `capesolo_dbg_list_threads` | Threads with start addresses; the current thread is flagged. |
-| `capesolo_dbg_list_breakpoints` | Hardware breakpoints with their debug register slots. |
+| `capesolo_dbg_list_breakpoints` | Hardware breakpoints with their debug register slots; software breakpoints with slot `sw`. |
 
 ### 6.3. Modification
 
 | Tool | Description |
 |------|-------------|
-| `capesolo_dbg_set_breakpoint` | `slot` is `next` or a debug register `0`-`3`. |
-| `capesolo_dbg_delete_breakpoint` | Delete by debug register number. |
+| `capesolo_dbg_set_breakpoint` | `slot` is `next` or a debug register `0`-`3`, or `sw` for a software (int3) breakpoint: execute only, unlimited, stops every thread, refused in system DLLs and monitor code. |
+| `capesolo_dbg_delete_breakpoint` | Delete by debug register number, or by `address` for a software breakpoint. |
 | `capesolo_dbg_set_register` | Decimal or `0x`-prefixed hex value. |
 | `capesolo_dbg_set_cip` | Move the instruction pointer; picks EIP or RIP by bitness. |
 | `capesolo_dbg_modify_flag` | Set, clear or flip the Zero, Sign or Carry flag. |

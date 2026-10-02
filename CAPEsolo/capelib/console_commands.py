@@ -43,7 +43,8 @@ LOCAL_COMMANDS = ("help", "clear", "disconnect", "quit")
 
 BP_TYPES = ("x", "w", "rw")
 BP_SIZES = (1, 2, 4, 8)
-BP_SLOTS = ("next", "0", "1", "2", "3")
+# "sw" is a software (int3) breakpoint rather than a debug register: execute only, any number.
+BP_SLOTS = ("next", "0", "1", "2", "3", "sw")
 FLAGS = ("zero", "sign", "carry")
 FLAG_ACTIONS = ("set", "clear", "flip")
 HEX_RX = re.compile(r"^(?:0[xX])?[0-9A-Fa-f]+$")
@@ -61,8 +62,8 @@ COMMANDS = (
     Command(CMD_STEP_OUT, ("ou", "stepout", "finish"), "ou", "Run to the return of this function"),
     Command(CMD_CONTINUE, ("ct", "continue", "go", "g"), "ct", "Continue execution"),
     Command(CMD_RUN_UNTIL, ("ru", "rununtil", "until"), "ru <address>", "Run until an address"),
-    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3]", "Set a breakpoint"),
-    Command(CMD_DELETE_BREAKPOINT, ("db", "bd", "delete"), "db <0-3>", "Delete a breakpoint by register"),
+    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3|sw]", "Set a breakpoint (bp <address> sw: software)"),
+    Command(CMD_DELETE_BREAKPOINT, ("db", "bd", "delete"), "db <0-3> | db sw <address>", "Delete a breakpoint by register or address"),
     Command(CMD_BREAKPOINT_LIST, ("lb", "bl", "breakpoints"), "lb", "List breakpoints"),
     Command(CMD_MEM_DUMP, ("md", "dump", "d"), "md <address> [size]", "Dump memory"),
     Command(CMD_REG_UPDATE, ("rg", "regs", "r"), "rg", "Refresh registers"),
@@ -166,6 +167,13 @@ def _Payload(command: Command, args: list[str]):
         return _BreakpointPayload(args)
 
     if code == CMD_DELETE_BREAKPOINT:
+        if len(args) == 2 and args[0].lower() == "sw":
+            addr = _Hex(args[1])
+            if addr is None:
+                return None, f"'{args[1]}' is not a hex address."
+
+            return f"sw|{addr:#X}", None
+
         if len(args) != 1 or args[0] not in ("0", "1", "2", "3"):
             return None, "Expected a debug register, 0 to 3."
 
@@ -230,6 +238,10 @@ def _BreakpointPayload(args: list[str]):
     if addr is None:
         return None, f"'{args[0]}' is not a hex address."
 
+    # `bp <address> sw` shorthand: a software breakpoint has no type or size to give.
+    if len(args) == 2 and args[1].lower() == "sw":
+        args = [args[0], "x", "1", "sw"]
+
     bpType = args[1].lower() if len(args) > 1 else "x"
     if bpType not in BP_TYPES:
         return None, f"'{args[1]}' is not a breakpoint type. Use one of {', '.join(BP_TYPES)}."
@@ -247,6 +259,9 @@ def _BreakpointPayload(args: list[str]):
 
     if bpType == "x" and size != 1:
         return None, "An execute breakpoint is always one byte; drop the size."
+
+    if slot == "sw" and bpType != "x":
+        return None, "A software breakpoint is execute only; use a debug register for a watch."
 
     # x86 requires a data breakpoint's address to be aligned to its length, and a misaligned
     # one silently watches the wrong bytes rather than failing.

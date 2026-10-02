@@ -172,3 +172,27 @@ def test_the_content_signature_fires_on_gui_shaped_results():
     signature = CAPEExtractedContent(results)
     assert signature.run() is True
     assert signature.data == [{"sample_exe": "QakbotPayload"}]
+
+
+def test_detected_threat_reads_capesolo_family_names():
+    """CAPEsolo's detections are family names, not CAPEv2's {family, details} records."""
+    from CAPEsolo.signatures.CAPE import CAPEDetectedThreat
+
+    signature = CAPEDetectedThreat(_results(detections=["Qakbot", "Emotet"]))
+    assert signature.run() is True
+    assert signature.description == "CAPE detected the Qakbot, Emotet malware"
+
+
+def test_detected_threat_still_reads_capev2_records():
+    from CAPEsolo.signatures.CAPE import CAPEDetectedThreat
+
+    signature = CAPEDetectedThreat(_results(detections=[{"family": "Qakbot", "details": {"by": "yara"}}]))
+    assert signature.run() is True
+    assert signature.data == [{"Qakbot": {"by": "yara"}}]
+
+
+def test_signatures_returning_an_unset_ret_get_false():
+    """Community's similarity_match returns self.ret without setting it when nothing matched."""
+    from CAPEsolo.capelib.signatures import Signature
+
+    assert Signature({}).ret is False

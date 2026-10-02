@@ -17,7 +17,7 @@ The debugger window is organized into several panels, each providing a different
 - **Stack:** Displays stack contents with the stack pointer (ESP/RSP) highlighted.
 - **Modules:** Lists all loaded modules (DLLs, EXEs).
 - **Threads:** Lists active threads in the process.
-- **Breakpoints:** Displays all set hardware breakpoints.
+- **Breakpoints:** Displays all set hardware and software breakpoints.
 - **Console Output:** Shows status messages, command results, and resolved API names.
 - **Command Input:** A text box for entering debugger commands manually.
 
@@ -59,7 +59,7 @@ The most common debugging actions are available via buttons and global hotkeys:
   - NOP Instruction
   - Patch Bytes
   - Patch History
-  - Set Breakpoint (slots 0–3)
+  - Set Breakpoint (slots 0–3, or Software)
   - Delete Breakpoint
   - Resolve Export...
 
@@ -102,6 +102,16 @@ For advanced or quick actions, use the command input box at the bottom:
 | Command    | Example         | Description                                                   |
 |------------|-----------------|---------------------------------------------------------------|
 | b          | b next 0x401000 | Sets a hardware breakpoint. Use slot (next, 0–3) and address. |
+| bp ... sw  | bp 0x401000 sw  | Sets a software breakpoint (see below).                       |
+| db sw      | db sw 0x401000  | Deletes the software breakpoint at an address.                |
+
+### Software breakpoints
+
+A software breakpoint writes an `int3` over the instruction. Unlike the four hardware breakpoints
+it is unlimited in number and stops every thread, not just the one it was set from. It is
+execute only, and it is refused in system DLLs and monitor code, which the debugger itself runs:
+use a hardware breakpoint for APIs. Memory, disassembly and dumps show the original byte, but
+code that checksums or scans itself can see the `int3`, and code written over it removes it.
 | d          | d 0x401000      | Dumps memory at the specified address.                        |
 | clear      | clear           | Clears the Console Output panel.                              |
 | quit       | quit            | Continues execution and closes the debugger.                  |

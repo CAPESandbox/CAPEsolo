@@ -92,7 +92,7 @@ DBG_FLAG_ACTIONS = (
     "SetCarryFlag",
     "FlipCarryFlag",
 )
-DBG_BREAKPOINT_SLOTS = ("next", "0", "1", "2", "3")
+DBG_BREAKPOINT_SLOTS = ("next", "0", "1", "2", "3", "sw")
 DBG_BREAKPOINT_TYPES = ("x", "w", "rw")
 DBG_BREAKPOINT_SIZES = (1, 2, 4, 8)
 MCP_TRANSPORTS = ("stdio", "streamable-http")
@@ -1661,6 +1661,8 @@ class AnalysisJobManager:
 
         if bpType == "x":
             width = 1
+        elif slot.strip().lower() == "sw":
+            return {"ok": False, "error": "A software breakpoint (slot sw) is execute only; use type x."}
         elif width not in DBG_BREAKPOINT_SIZES:
             return {"ok": False, "error": f"size must be one of {', '.join(str(s) for s in DBG_BREAKPOINT_SIZES)}."}
         elif addr % width:
@@ -1669,8 +1671,14 @@ class AnalysisJobManager:
 
         return self._simple_command(CMD_SET_BREAKPOINT, f"{slot.strip().lower()}|{addr:#X}|{bpType}|{width}")
 
-    def debugger_delete_breakpoint(self, index: Any) -> dict[str, Any]:
-        error = {"ok": False, "error": "index must be a debug register number between 0 and 3."}
+    def debugger_delete_breakpoint(self, index: Any = None, address: Any = None) -> dict[str, Any]:
+        if address not in (None, ""):
+            addr = self._dbg.ParseAddress(address)
+            if addr is None:
+                return {"ok": False, "error": f"Invalid address: {address}"}
+            return self._simple_command(CMD_DELETE_BREAKPOINT, f"sw|{addr:#X}")
+
+        error = {"ok": False, "error": "index must be a debug register number between 0 and 3, or give the address of a software breakpoint."}
         if isinstance(index, bool):
             return error
         try:
@@ -2093,24 +2101,31 @@ if mcp:
 
     @mcp.tool()
     def capesolo_dbg_set_breakpoint(address: str, slot: str = "next", type: str = "x", size: int = 1) -> dict[str, Any]:
-        """Set a hardware breakpoint at address. slot is next or a debug register 0-3.
+        """Set a breakpoint at address. slot is next or a debug register 0-3 for a hardware
+        breakpoint, or "sw" for a software (int3) breakpoint.
 
         type is "x" to break on execute, "w" on write, or "rw" on read or write. A data
         breakpoint reads size bytes (1, 2, 4 or 8) and its address must be aligned to that
         width. size is ignored for "x", which is always one byte.
+
+        A software breakpoint is execute only but unlimited in number and stops every thread,
+        where a hardware one is per thread. It is refused in system DLLs and monitor code (use a
+        hardware breakpoint for APIs), and is visible to code that checksums itself.
         """
         return manager.debugger_set_breakpoint(address, slot, type, size)
 
 
     @mcp.tool()
-    def capesolo_dbg_delete_breakpoint(index: int) -> dict[str, Any]:
-        """Delete the hardware breakpoint held in debug register index (0-3)."""
-        return manager.debugger_delete_breakpoint(index)
+    def capesolo_dbg_delete_breakpoint(index: int = -1, address: str = "") -> dict[str, Any]:
+        """Delete the hardware breakpoint held in debug register index (0-3), or, given address,
+        the software breakpoint there."""
+        return manager.debugger_delete_breakpoint(index, address)
 
 
     @mcp.tool()
     def capesolo_dbg_list_breakpoints() -> dict[str, Any]:
-        """List the hardware breakpoints currently set, with their debug register slots."""
+        """List the breakpoints currently set: hardware ones with their debug register slot,
+        software ones with slot "sw"."""
         return manager.debugger_list_breakpoints()
 
 

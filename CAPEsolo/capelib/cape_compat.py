@@ -15,12 +15,15 @@ CAPEsolo, and both are bridged here rather than by editing the files:
 """
 
 import configparser
+import gzip
 import importlib
 import importlib.util
+import json
 import logging
 import os
 import sys
 import types
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +54,17 @@ def add_family_detection(results, family, detected_by, detected_on):
     detections = results.setdefault("detections", [])
     if family and family not in detections:
         detections.append(family)
+
+
+def get_dga_lookup_dict():
+    """lib.cuckoo.common.fraunhofer_helper.get_dga_lookup_dict: data/dga_lookup_dict.json.gz
+    beside cfg.ini (CUCKOO_ROOT), or {} when the user has not put it there."""
+    path = user_config_path().parent / "data" / "dga_lookup_dict.json.gz"
+    if path.exists():
+        with gzip.GzipFile(path, "r") as fin:
+            return json.loads(fin.read().decode())
+
+    return {}
 
 
 def install_shims():
@@ -85,6 +99,7 @@ def install_shims():
         convert_to_printable=convert_to_printable,
         add_family_detection=add_family_detection,
     )
+    common.fraunhofer_helper = module("lib.cuckoo.common.fraunhofer_helper", get_dga_lookup_dict=get_dga_lookup_dict)
     cuckoo.common = common
     lib.cuckoo = cuckoo
 
@@ -126,7 +141,11 @@ def load_user_signatures():
             spec = importlib.util.spec_from_file_location(name, path)
             module = importlib.util.module_from_spec(spec)
             sys.modules[name] = module
-            spec.loader.exec_module(module)
+            # Upstream writes regexes as plain strings ("\."), which Python 3.12 warns about on
+            # every compile; the patterns still mean what they say.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                spec.loader.exec_module(module)
             load_plugins(module)
         except Exception as e:
             sys.modules.pop(name, None)

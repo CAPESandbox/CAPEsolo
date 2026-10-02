@@ -5,6 +5,7 @@ import pkgutil
 import re
 import socket
 import sys
+import warnings
 from builtins import NotImplementedError
 from collections import defaultdict
 
@@ -95,6 +96,9 @@ class Signature:
     order = 0
 
     evented = False
+    # Community signatures (similarity_match) return self.ret without ever setting it when
+    # nothing matched; CAPEv2's Signature does not define it either.
+    ret = False
     filter_processnames = set()
     filter_apinames = set()
     filter_categories = set()
@@ -382,7 +386,11 @@ class Signature:
         if regex:
             if all:
                 retset = set()
-            exp = re.compile(pattern, re.IGNORECASE)
+            # Upstream patterns such as ".*\.[[a-z0-9]{8}-...]$" make re warn of a possible
+            # nested set; the pattern compiles and matches as it always has.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                exp = re.compile(pattern, re.IGNORECASE)
             if isinstance(subject, list):
                 for item in subject:
                     if exp.match(item):
