@@ -2479,7 +2479,7 @@ class ReportViewer:
 # the anthropic SDK is installed. Without it every pane shows an install hint and the rest of
 # the viewer is untouched.
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT = "high"
 ANALYSIS_MAX_TOKENS = 16000
 CHAT_MAX_TOKENS = 64000
@@ -2487,12 +2487,14 @@ CHAT_MAX_TOKENS = 64000
 # a declined request on a fallback model inside the same call, so a refusal degrades to a
 # second opinion rather than an empty pane.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
-# List prices, $ per million tokens (input, output), for the pre-run estimate only.
+# List prices, $ per million tokens (input, output, cache read), for the estimate and the spend
+# readout. Cache reads are not a fixed share of input: 5% on Opus 5.5, 2.5% on Fable 5.1.
 MODEL_PRICES = {
-    "claude-opus-5": (5.0, 25.0),
-    "claude-fable-5-1": (10.0, 50.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
 }
 
 # How much of each section a slice may carry. A report is routinely hundreds of MB; the model
@@ -3091,7 +3093,7 @@ class AnalysisEngine:
             total_input += getattr(counted, "input_tokens", 0) or 0
         # Output is unknown before the fact; assume each agent fills a third of its budget.
         est_output = len(tabs) * (ANALYSIS_MAX_TOKENS // 3)
-        in_price, out_price = self.config.price()
+        in_price, out_price, _cache_price = self.config.price()
         return {
             "agents": len(tabs),
             "input_tokens": total_input,
@@ -3101,9 +3103,9 @@ class AnalysisEngine:
 
     def spend(self):
         """What has actually been spent so far, from the responses' own usage."""
-        in_price, out_price = self.config.price()
+        in_price, out_price, cache_price = self.config.price()
         return (self.usage["input"] / 1e6 * in_price
-                + self.usage["cache_read"] / 1e6 * in_price * 0.1
+                + self.usage["cache_read"] / 1e6 * cache_price
                 + self.usage["output"] / 1e6 * out_price)
 
 
@@ -3159,7 +3161,7 @@ USAGE = """CAPEsolo report viewer
     python report_viewer.py [report.json | bundle.zip] [options]
 
     --theme dark|light   force a palette (default: follow the OS on Windows)
-    --model ID           Claude model (default: $ANTHROPIC_MODEL or claude-opus-5)
+    --model ID           Claude model (default: $ANTHROPIC_MODEL or claude-opus-5-5)
     --api-key KEY        API key (default: $ANTHROPIC_API_KEY)
     --effort LEVEL       low|medium|high|xhigh|max (default: high)
     --ask "QUESTION"     answer one question about the report and exit
