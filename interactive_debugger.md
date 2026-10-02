@@ -119,6 +119,32 @@ For advanced or quick actions, use the command input box at the bottom:
 | bp ... sw  | bp 0x401000 sw  | Sets a software breakpoint (see below).                       |
 | db sw      | db sw 0x401000  | Deletes the software breakpoint at an address.                |
 
+### Names instead of addresses
+
+Anywhere an address is typed - the command box (`bp`, `ru`, `md`, `ni`, `pb`, `db sw`), the
+Set Breakpoint dialog, Trace's **Stop at** and Dump as Payload - an export (`kernel32!VirtualAlloc`;
+`.dll` and the module's case are optional) or a name you gave an address works too. A bare
+export name works when only one module exports it. Exports load in the background after the
+first break, so a module not read yet is not found. Use a hardware breakpoint for an API:
+software breakpoints are refused in system DLLs.
+
+### Memory Map
+
+The **Memory** tab (beside Modules) logs regions that appear, change protection, grow or are
+freed after the first break - so it starts empty. **Memory Map...** on that tab lists everything
+mapped now: base, size, protection and module, filterable by any of them. Regions that are
+executable and writable, or executable outside any module (typical of unpacked or injected
+code), are highlighted. Double-click to disassemble; right-click for Dump Address, Dump as
+Payload and Copy Address. **Refresh** re-reads the map; free and reserved regions are not listed.
+
+### Dump as Payload
+
+Right-click a row in the Memory Dump pane, or a region in the Memory panel, and choose
+**Dump as Payload...** to save a range as a CAPE payload of the analysis. The size defaults to
+the rest of the region (16 MB at most). Unreadable pages are zero-filled. The payload goes
+through YARA and config extraction like any monitor dump and is listed under Payloads once the
+analysis is processed.
+
 ### Software breakpoints
 
 A software breakpoint writes an `int3` over the instruction. Unlike the four hardware breakpoints

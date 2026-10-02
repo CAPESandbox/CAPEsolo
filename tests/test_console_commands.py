@@ -200,3 +200,25 @@ def test_help_lists_every_command():
     text = HelpText()
     for command in COMMANDS:
         assert command.names[0] in text
+
+
+NAMES = {"kernel32!VirtualAlloc": 0x7FFEB2D41000, "decrypt": 0x401200}
+
+
+def test_address_arguments_accept_resolved_names():
+    assert ParseCommand("bp kernel32!VirtualAlloc", NAMES.get) == ("BP", "next|0X7FFEB2D41000|x|1", None)
+    assert ParseCommand("ru decrypt", NAMES.get) == ("RU", "0x401200", None)
+    assert ParseCommand("md decrypt 40", NAMES.get) == ("MD", "0x401200|0x40", None)
+
+
+def test_hex_wins_over_a_name_that_reads_as_hex():
+    assert ParseCommand("ru add", {"add": 0x401200}.get) == ("RU", "0xadd", None)
+
+
+def test_unknown_name_is_rejected():
+    code, payload, error = ParseCommand("bp kernel32!Nope", NAMES.get)
+    assert code is None and "known name" in error
+
+
+def test_names_are_not_resolved_without_a_resolver():
+    assert "known name" in Err("bp kernel32!VirtualAlloc")

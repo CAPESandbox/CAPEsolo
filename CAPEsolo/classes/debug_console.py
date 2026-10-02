@@ -17,7 +17,7 @@ from CAPEsolo.capelib.api_protos import AppendUserPrototype, LoadPrototypes, Par
 from CAPEsolo.capelib.call_args import PROTECT_VALUES, CallArguments, ParseRegisters
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.console_commands import HelpText, ParseCommand
-from CAPEsolo.capelib.debug_session import ParseTrace
+from CAPEsolo.capelib.debug_session import MAX_DUMP_SIZE, ParseDumpRegion, ParseTrace
 from CAPEsolo.capelib.symbol_names import (
     Absolute,
     IsValidName,
@@ -55,6 +55,7 @@ from .debug_controls import (
     COMMENT_COL,
     MemDumpListCtrl,
     MemoryListCtrl,
+    MemoryMapDialog,
     ModulesListCtrl,
     PrototypeDialog,
     RegsTextCtrl,
@@ -110,6 +111,7 @@ TAG_STRW = "STRW"
 TAG_PAGE = "PAGE"
 TAG_PTRS = "PTRS"
 TAG_TRACE = "TRACE"
+TAG_PAYLOAD = "PAYLOAD"
 # debug_session.TRACE_REASONS values as the console reports them.
 TRACE_STOP_TEXT = {
     "stop_at": "reached the stop address",
@@ -359,6 +361,7 @@ class ConsolePanel(wx.Panel):
         # A file dump in progress: capemon serves at most MAX_MEM_REQUEST bytes per request,
         # so larger dumps go out as consecutive requests and are written once all arrive.
         self.fileDump = None
+        self.memoryMapDlg = None
         self.assembler = None
         self.firstBreak = True
         self.CMD_PAGE_MAP = None
@@ -514,6 +517,10 @@ class ConsolePanel(wx.Panel):
         memoryPageSizer = wx.BoxSizer(wx.VERTICAL)
         self.memoryDisplay = MemoryListCtrl(memoryPage, console=self)
         self.memoryDisplay.SetFont(fontCourier)
+        # The panel only logs changes since the first break; the map shows everything mapped.
+        memoryMapBtn = ui.Button(memoryPage, label="Memory Map...")
+        memoryMapBtn.Bind(wx.EVT_BUTTON, lambda evt: self.ShowMemoryMap())
+        memoryPageSizer.Add(memoryMapBtn, 0, wx.ALL, 3)
         memoryPageSizer.Add(self.memoryDisplay, 1, wx.EXPAND | wx.ALL, 3)
         memoryPage.SetSizer(memoryPageSizer)
         self.modulesNotebook.AddPage(memoryPage, "Memory")
@@ -717,8 +724,85 @@ class ConsolePanel(wx.Panel):
             + (" (path truncated)" if trace["truncated"] else "")
             + (f". Hottest: {hottest}" if hottest else "")
         )
+
+        # The view follows the halt, so a trace that ends outside the module it began in (in a
+        # hooked API, say) leaves its tinted path off screen; say where to go back to. Shellcode
+        # has no module, so there the region the trace began in stands in for one.
+        def Container(addr):
+            return self.ModuleNameFor(addr) or FindRegion(self.disassemblyConsole.pageMap, addr)
+
+        if cips and Container(trace["halt"]) != (home := Container(cips[0])):
+            last = next(addr for addr in reversed(cips) if Container(addr) == home)
+            where = home if isinstance(home, str) else "the starting region"
+            self.AppendConsole(f"Last traced address in {where}: {last:#x} (Go To it to see the path)")
+
         # The thread is halted where the trace ended, as after a step.
         self.HandleExecution(f"Trace halted at {trace['halt']:#x} tid {trace['tid']}")
+
+    def ShowMemoryMap(self):
+        """Open the memory map, or bring the open one forward with the current map."""
+        if self.memoryMapDlg:
+            self.memoryMapDlg.Populate()
+        else:
+            self.memoryMapDlg = MemoryMapDialog(self)
+        self.memoryMapDlg.Show()
+        self.memoryMapDlg.Raise()
+
+    def AddressFromText(self, text: str) -> int | None:
+        """A typed address: hex (0x optional), else a name ResolveName knows, else None."""
+        text = (text or "").strip()
+        if IsValidHexAddress(text):
+            return int(text, 16)
+        return self.ResolveName(text) if text else None
+
+    def PromptDumpPayload(self, address="", size=None):
+        """Save a range as a CAPE payload of this analysis (capemon's DR), so it goes through
+        the YARA and config tabs like any monitor dump once the analysis is processed."""
+        if isinstance(address, int):
+            address = f"{address:#x}"
+
+        text = wx.GetTextFromUser("Start address (hex or a name):", "Dump as Payload", address or "", self)
+        if not text:
+            return
+
+        addr = self.AddressFromText(text)
+        if addr is None:
+            ui.message(f"'{text}' is not a valid address or known name.", "Dump as Payload", wx.OK | wx.ICON_ERROR)
+            return
+
+        if size is None:
+            # The rest of the region by default: the usual ask is "this allocation".
+            region = FindRegion(self.disassemblyConsole.pageMap, addr)
+            size = region[0] + region[1] - addr if region else PAGE_SIZE
+        size = min(size, MAX_DUMP_SIZE)
+
+        text = wx.GetTextFromUser("Size in bytes (hex):", "Dump as Payload", f"{size:#x}", self)
+        if not text:
+            return
+
+        try:
+            size = int(text, 16)
+        except ValueError:
+            size = 0
+        if not 1 <= size <= MAX_DUMP_SIZE:
+            ui.message(f"Size must be between 1 and {MAX_DUMP_SIZE:#x}.", "Dump as Payload", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.AppendConsole(f"Dumping {size:#x} bytes at {addr:#x} as a payload...")
+        self.SendCommand(CMD_DUMP_REGION, f"{addr:#x}|{size:#x}", tag=self.NextTag(TAG_PAYLOAD))
+
+    def HandleDumpRegion(self, payload):
+        reply = ParseDumpRegion(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Dump as payload failed: {reply['error']}")
+            return
+
+        unreadable = reply["unreadable"]
+        self.AppendConsole(
+            f"Saved {reply['written']:#x} bytes as payload {reply['path']}"
+            + (f" ({unreadable:#x} unreadable bytes zero-filled)" if unreadable else "")
+            + "; it is listed under Payloads once the analysis is processed."
+        )
 
     def OnAddressEnter(self, event):
         self.memAddr = self.memAddressInput.GetValue().strip()
@@ -966,7 +1050,7 @@ class ConsolePanel(wx.Panel):
         del self.commandHistory[:-MAX_HISTORY]
         self.historyPos = None
 
-        code, payload, error = ParseCommand(inputText)
+        code, payload, error = ParseCommand(inputText, self.ResolveName)
         if error:
             self.AppendConsole(error)
             return
@@ -1154,6 +1238,7 @@ class ConsolePanel(wx.Panel):
             CMD_NOP_INSTRUCTION: self.HandleNopInstruction,
             CMD_PATCH_BYTES: self.HandlePatchBytes,
             CMD_TRACE: self.HandleTrace,
+            CMD_DUMP_REGION: self.HandleDumpRegion,
         }
 
         if command in CMD_CONSOLE:
@@ -1881,6 +1966,8 @@ class ConsolePanel(wx.Panel):
             return
 
         changed = self.disassemblyConsole.LoadPageMap(payload)
+        if self.memoryMapDlg and self.memoryMapDlg.IsShown():
+            self.memoryMapDlg.Populate()
         oldMap = self.disassemblyConsole.prevPageMap
         newMap = self.disassemblyConsole.pageMap
         if changed:
@@ -2402,6 +2489,33 @@ class ConsolePanel(wx.Panel):
             self.AppendConsole(f"'{name}' names {len(matches)} addresses ({listed}); going to the first.")
 
         return matches[0]
+
+    def ResolveName(self, name: str) -> int | None:
+        """The address a typed name means: a user name, else an export.
+
+        Exports are written `module!symbol`; the module matches case-insensitively with or
+        without ".dll", the symbol as written. A bare symbol resolves only if one module
+        exports it - VirtualAlloc is in both kernel32 and kernelbase - and the candidates are
+        listed otherwise. Exports load in the background after the first break, so a module
+        not yet read resolves nothing.
+        """
+        addr = self.AddressForName(name)
+        if addr is not None:
+            return addr
+
+        modWanted, sep, symWanted = name.strip().rpartition("!")
+        modWanted = modWanted.lower().removesuffix(".dll")
+        matches = []
+        for addr, export in self.exports.items():
+            mod, _, sym = export.rpartition("!")
+            if sym == symWanted and (not sep or mod.lower().removesuffix(".dll") == modWanted):
+                matches.append((addr, export))
+
+        if len(matches) > 1:
+            self.AppendConsole(f"'{name}' is ambiguous: " + ", ".join(export for _, export in sorted(matches)))
+            return None
+
+        return matches[0][0] if matches else None
 
     def AddressOfSymbol(self, name: str) -> int | None:
         """The address `name` refers to: the reverse of SymbolFor.

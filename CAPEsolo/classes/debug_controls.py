@@ -1549,6 +1549,8 @@ class MemDumpListCtrl(wx.ListCtrl):
             menu.AppendSeparator()
             miDataBp = menu.Append(wx.ID_ANY, "Set Data Breakpoint...")
             self.Bind(wx.EVT_MENU, lambda e, r=row: self.parent.PromptBreakpoint(self.data[r][0]), miDataBp)
+            miPayload = menu.Append(wx.ID_ANY, "Dump as Payload...")
+            self.Bind(wx.EVT_MENU, lambda e, r=row: self.parent.PromptDumpPayload(self.data[r][0]), miPayload)
         self.PopupMenu(menu, pos)
         menu.Destroy()
 
@@ -1960,6 +1962,13 @@ class MemoryListCtrl(wx.ListCtrl):
         miDump = menu.Append(wx.ID_ANY, "Dump Address")
         self.Bind(wx.EVT_MENU, lambda e, r=row: self.OnDisassemble(r), miDisassemble)
         self.Bind(wx.EVT_MENU, lambda e, r=row: self.OnDump(r), miDump)
+        if self.entries[row].kind != REGION_FREED:
+            miPayload = menu.Append(wx.ID_ANY, "Dump as Payload...")
+            self.Bind(
+                wx.EVT_MENU,
+                lambda e, c=self.entries[row]: self.parent.PromptDumpPayload(c.base, c.size),
+                miPayload,
+            )
         self.PopupMenu(menu, pos)
         menu.Destroy()
 
@@ -1987,6 +1996,129 @@ class MemoryListCtrl(wx.ListCtrl):
         addr = self.RowAddress(row)
         if addr is not None:
             self.parent.SendCommand(CMD_MEM_DUMP, f"{addr:#x}", tag=self.parent.NextTag(TAG_DUMP))
+
+
+class MemoryMapDialog(ui.Dialog):
+    """Every region the target has mapped, from the PM page map.
+
+    Built when opened and on Refresh, not on every break: the Memory panel answers "what just
+    changed", this answers "what is there". Free and reserved regions (protect 0) are left
+    out - most of a process's address space, and nothing to look at. Modeless, so it can stay
+    open while its actions drive the console.
+    """
+
+    def __init__(self, console):
+        super().__init__(
+            console, title="Memory Map", size=wx.Size(680, 600), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
+        )
+        self.console = console
+        self.regions: list[tuple[int, int, int, str]] = []
+        self.shown: list[tuple[int, int, int, str]] = []
+
+        filterField = ui.Field(self)
+        self.filterCtrl = filterField.ctrl
+        self.filterCtrl.Bind(wx.EVT_TEXT, lambda e: self.Rebuild())
+        refreshBtn = ui.Button(self, label="Refresh")
+        refreshBtn.Bind(wx.EVT_BUTTON, lambda e: self.console.RefreshPageMap())
+        top = wx.BoxSizer(wx.HORIZONTAL)
+        top.Add(wx.StaticText(self, label="Filter:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        top.Add(filterField, 1, wx.EXPAND | wx.RIGHT, 5)
+        top.Add(refreshBtn, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        self.listCtrl = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.listCtrl.InsertColumn(0, "Base", width=150)
+        self.listCtrl.InsertColumn(1, "Size", width=100)
+        self.listCtrl.InsertColumn(2, "Protect", width=80)
+        self.listCtrl.InsertColumn(3, "Module", width=260)
+        self.listCtrl.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
+        self.listCtrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self.OnDisassemble(e.GetIndex()))
+
+        self.summary = wx.StaticText(self, label="")
+        legend = wx.StaticText(
+            self, label="Highlighted: executable and writable, or executable outside any module."
+        )
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(top, 0, wx.EXPAND | wx.ALL, 10)
+        sizer.Add(self.listCtrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        sizer.Add(self.summary, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        sizer.Add(legend, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        # ID_CANCEL hides a modeless dialog, so reopening it is just Show.
+        sizer.Add(ui.Button(self, wx.ID_CANCEL, "Close", variant=ui.PRIMARY), 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        self.SetSizer(sizer)
+        apply_theme(self)
+        # After apply_theme, which would replace it with the UI font.
+        self.listCtrl.SetFont(FONT_CODE)
+        legend.SetForegroundColour(FG_SECONDARY)
+        self.Populate()
+
+    @staticmethod
+    def Suspicious(prot: int, module: str) -> bool:
+        executable = prot & (0x10 | 0x20 | 0x40 | 0x80)
+        return bool(prot & (0x40 | 0x80) or (executable and not module))
+
+    def Populate(self):
+        """Re-read the console's current page map."""
+        self.regions = [
+            (base, size, prot, self.console.ModuleNameFor(base))
+            for base, size, prot in self.console.disassemblyConsole.pageMap
+            if prot & 0xFF
+        ]
+        self.Rebuild()
+
+    def Rebuild(self):
+        wanted = self.filterCtrl.GetValue().strip().lower().removeprefix("0x")
+        self.shown = []
+        self.listCtrl.Freeze()
+        try:
+            self.listCtrl.DeleteAllItems()
+            for region in self.regions:
+                base, size, prot, module = region
+                cells = (f"{base:016X}", f"{size:#x}", ProtectText(prot), module)
+                if wanted and not any(wanted in cell.lower() for cell in cells):
+                    continue
+
+                row = self.listCtrl.InsertItem(len(self.shown), cells[0])
+                for col in (1, 2, 3):
+                    self.listCtrl.SetItem(row, col, cells[col])
+                if self.Suspicious(prot, module):
+                    self.listCtrl.SetItemBackgroundColour(row, COLOR_LIGHT_YELLOW)
+                self.shown.append(region)
+        finally:
+            self.listCtrl.Thaw()
+
+        self.summary.SetLabel(f"{len(self.shown)} of {len(self.regions)} regions (free and reserved ones are not listed)")
+
+    def OnContextMenu(self, event):
+        row = self.listCtrl.GetFirstSelected()
+        if row == -1:
+            return
+
+        menu = wx.Menu()
+        miDisassemble = menu.Append(wx.ID_ANY, "Disassemble")
+        miDump = menu.Append(wx.ID_ANY, "Dump Address")
+        miPayload = menu.Append(wx.ID_ANY, "Dump as Payload...")
+        miCopy = menu.Append(wx.ID_ANY, "Copy Address")
+        base, size = self.shown[row][0], self.shown[row][1]
+        self.Bind(wx.EVT_MENU, lambda e: self.OnDisassemble(row), miDisassemble)
+        self.Bind(
+            wx.EVT_MENU,
+            lambda e: self.console.SendCommand(CMD_MEM_DUMP, f"{base:#x}", tag=self.console.NextTag(TAG_DUMP)),
+            miDump,
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.console.PromptDumpPayload(base, size), miPayload)
+        self.Bind(wx.EVT_MENU, lambda e: self.CopyAddress(base), miCopy)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def OnDisassemble(self, row):
+        if 0 <= row < len(self.shown):
+            self.console.disassemblyConsole.NavigateTo(self.shown[row][0])
+
+    def CopyAddress(self, base):
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(f"{base:#x}"))
+            wx.TheClipboard.Close()
 
 
 class ExportsDialog(ui.Dialog):
@@ -2177,11 +2309,12 @@ class BreakpointDialog(ui.Dialog):
     def GetValues(self):
         """Return (slot, type, size, address) or None, reporting why if it is invalid."""
         text = self.addressCtrl.GetValue().strip()
-        if not IsValidHexAddress(text):
-            ui.message(f"'{text}' is not a valid address.", "Set Breakpoint", wx.OK | wx.ICON_ERROR)
+        # The console resolves names too (kernel32!VirtualAlloc, a rename); it is the parent.
+        address = self.GetParent().AddressFromText(text)
+        if address is None:
+            ui.message(f"'{text}' is not a valid address or known name.", "Set Breakpoint", wx.OK | wx.ICON_ERROR)
             return None
 
-        address = int(text, 16)
         bpType = self.SelectedType()
         size = BP_SIZES[self.sizeCtrl.GetSelection()] if bpType != BP_EXEC else 1
         # x86 requires a data breakpoint's address to be aligned to its length; a misaligned
@@ -2257,13 +2390,14 @@ class TraceDialog(ui.Dialog):
             return None
 
         stop = self.stopCtrl.GetValue().strip()
-        if stop and not IsValidHexAddress(stop):
-            ui.message(f"'{stop}' is not a valid address.", "Trace", wx.OK | wx.ICON_ERROR)
+        stopAddr = self.GetParent().AddressFromText(stop) if stop else 0
+        if stopAddr is None:
+            ui.message(f"'{stop}' is not a valid address or known name.", "Trace", wx.OK | wx.ICON_ERROR)
             return None
 
         # TS flags: 1 steps over CALLs, 2 stops on leaving the allocation the trace began in.
         flags = (1 if self.stepOverCtrl.GetValue() else 0) | (2 if self.moduleCtrl.GetValue() else 0)
-        return steps, int(stop, 16) if stop else 0, flags
+        return steps, stopAddr, flags
 
 
 class CallStackListCtrl(wx.ListCtrl):
