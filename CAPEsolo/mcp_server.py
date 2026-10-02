@@ -34,6 +34,7 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_MODULE_LIST,
     CMD_NOP_INSTRUCTION,
     CMD_PAGE_LOAD,
+    CMD_READ_POINTERS,
     CMD_PATCH_BYTES,
     CMD_REG_UPDATE,
     CMD_RUN_UNTIL,
@@ -47,6 +48,7 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_TRACE,
 )
 from CAPEsolo.capelib.config_paths import config_paths
+from CAPEsolo.capelib.cfg import MAX_BLOCKS, BuildCfg, CallOperand, LayoutCfg, StaticSlotAddress
 from CAPEsolo.capelib.console_commands import SearchPatternHex
 from CAPEsolo.capelib.resultserver import ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
@@ -1491,6 +1493,141 @@ class AnalysisJobManager:
             return {"ok": False, "error": f"Invalid address: {address}"}
         return self.debugger_execute(CMD_RUN_UNTIL, f"{addr:#X}", timeout_seconds=timeout_seconds)
 
+    def _read_pointers(self, session: Any, addresses: list[int]) -> dict[int, int]:
+        """Pointer-sized reads in batches of 256 (RD); unreadable addresses are absent."""
+        values = {}
+        for start in range(0, len(addresses), 256):
+            batch = ",".join(f"{a:#x}" for a in addresses[start:start + 256])
+            payload, error = self._command(session, CMD_READ_POINTERS, f"{MCP_DUMP_TAG}|{batch}")
+            if error:
+                continue
+            for entry in payload.split("|")[1:]:
+                try:
+                    slot, value = (int(part, 16) for part in entry.split(",", 1))
+                except ValueError:
+                    continue
+                values[slot] = value
+        return values
+
+    def debugger_cfg(self, address: Any = "", max_blocks: Any = 100, include_instructions: bool = True) -> dict[str, Any]:
+        """The control-flow graph of the function at address (default: CIP)."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        maxBlocks, error = self._validate_count(max_blocks, MAX_BLOCKS, "max_blocks")
+        if error:
+            return error
+        if address in (None, ""):
+            if session.cip is None:
+                return {"ok": False, "error": "No current instruction pointer is known; provide an address."}
+            entry = session.cip
+        else:
+            entry = self._dbg.ParseAddress(address)
+            if entry is None:
+                return {"ok": False, "error": f"Invalid address: {address}"}
+        if not session.bits:
+            registers = self._collect_registers(session)
+            if not registers.get("ok"):
+                return registers
+
+        pages: dict[int, bytes | None] = {}
+
+        def ReadBytes(addr, count):
+            out = b""
+            while len(out) < count:
+                cursor = addr + len(out)
+                base = cursor - cursor % self._dbg.PAGE_SIZE
+                if base not in pages:
+                    pages[base] = self._load_page(session, base)
+                data = pages[base]
+                offset = cursor - base
+                if not data or offset >= len(data):
+                    break
+                out += data[offset:offset + count - len(out)]
+            return out
+
+        graph = BuildCfg(entry, ReadBytes, session.bits, maxBlocks)
+        # LayoutCfg is what tells a loop's closing edge from forward flow; sizes do not matter.
+        loops = {(src, dst) for src, dst, _kind, back in LayoutCfg(graph, lambda addr: (1, 1)).edges if back}
+
+        modules = []
+        for mod in self.debugger_list_modules().get("modules") or []:
+            try:
+                modules.append((int(mod["base"], 16), int(mod["size"], 16), mod["name"]))
+            except (KeyError, ValueError):
+                continue
+
+        def Where(addr):
+            for base, size, name in modules:
+                if base <= addr < base + size:
+                    return f"{name}+{addr - base:#x}"
+            return ""
+
+        # Indirect calls through a fixed slot (the import table) are resolved the way the
+        # disassembly view resolves them: one batched read of every slot.
+        slots = {}
+        for block in graph.blocks.values():
+            for ins in block.instructions:
+                operand = CallOperand(ins.text)
+                if operand and operand.startswith("["):
+                    slot = StaticSlotAddress(operand, ins.address + ins.size)
+                    if slot is not None:
+                        slots[ins.address] = slot
+        values = self._read_pointers(session, sorted(set(slots.values())))
+
+        blocks = []
+        for start, block in graph.blocks.items():
+            last = block.instructions[-1]
+            calls = []
+            for ins in block.instructions:
+                operand = CallOperand(ins.text)
+                if operand is None:
+                    continue
+                call = {"site": f"{ins.address:#x}"}
+                if operand.startswith("0x"):
+                    target = int(operand, 16)
+                else:
+                    slot = slots.get(ins.address)
+                    target = values.get(slot) if slot is not None else None
+                    call["operand"] = operand
+                    if slot is not None:
+                        call["slot"] = f"{slot:#x}"
+                if target is not None:
+                    call.update(target=f"{target:#x}", where=Where(target))
+                calls.append(call)
+            entry_ = {
+                "start": f"{start:#x}",
+                "end": f"{last.address + last.size:#x}",
+                "instruction_count": len(block.instructions),
+                "successors": [
+                    {"address": f"{target:#x}", "kind": kind, "loop": (start, target) in loops}
+                    | ({"where": Where(target)} if target not in graph.blocks else {})
+                    for target, kind in block.edges
+                ],
+                "ends": block.end,
+                "calls": calls,
+            }
+            if include_instructions:
+                entry_["instructions"] = [
+                    {"address": f"{ins.address:#x}", "bytes": ins.bytes, "text": ins.text} for ins in block.instructions
+                ]
+            blocks.append(entry_)
+
+        unreadable = sorted(graph.missing)
+        return {
+            "ok": True,
+            "entry": f"{entry:#x}",
+            "where": Where(entry),
+            "bits": session.bits,
+            "block_count": len(blocks),
+            "edge_count": sum(len(b["successors"]) for b in blocks),
+            "loops": [{"from": f"{s:#x}", "to": f"{d:#x}"} for s, d in sorted(loops)],
+            "truncated": graph.truncated,
+            "unreadable": [f"{a:#x}" for a in unreadable[:50]],
+            "blocks": blocks,
+        }
+
     def _load_page(self, session: Any, pageBase: int) -> bytes | None:
         """One page of the target's memory, or None where it cannot be read."""
         payload, error = self._command(session, CMD_PAGE_LOAD, f"{MCP_DUMP_TAG}|{pageBase:#x}")
@@ -2127,6 +2264,27 @@ if mcp:
         the payload's CAPE type ("|" becomes "/"). A report already built for the job is
         dropped so the next one includes the payload."""
         return manager.debugger_dump_region(address, size, type_string)
+
+
+    @mcp.tool()
+    def capesolo_dbg_cfg(address: str = "", max_blocks: int = 100, include_instructions: bool = True) -> dict[str, Any]:
+        """The control-flow graph of the function starting at address (default: the current
+        instruction pointer) - basic blocks and the edges between them, for reasoning about a
+        function's structure rather than its linear disassembly.
+
+        There are no symbols, so address is taken as the function entry: pass a call target or
+        a known entry, not the middle of a function. Conditional and direct jumps are followed;
+        calls fall through. Each block lists its successors (kind taken / fall for the two sides
+        of a conditional jump, jump for an unconditional one, next for plain flow into a block
+        something else also jumps to; loop marks the edge that closes a loop), why it ends when
+        it has no successor (ret, indirect - a switch table or jump through a register - stop,
+        missing, limit), and its calls: direct targets, and indirect ones through a fixed slot
+        such as the import table resolved by reading the slot. Addresses outside the graph carry
+        where (module+offset). loops lists every loop's closing edge; unreadable lists addresses
+        the graph could not read. At most max_blocks blocks (500 max), nearest the entry first;
+        include_instructions=false returns the structure without instruction text.
+        """
+        return manager.debugger_cfg(address, max_blocks, include_instructions)
 
 
     @mcp.tool()

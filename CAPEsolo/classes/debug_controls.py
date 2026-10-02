@@ -10,6 +10,7 @@ import wx
 
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.api_protos import user_prototypes_path
+from CAPEsolo.capelib.cfg import StaticSlotAddress
 from CAPEsolo.capelib.console_commands import SearchPatternHex
 from CAPEsolo.capelib.flow_arrows import GUTTER_WIDTH, BranchLanes
 from CAPEsolo.capelib.page_cache import (
@@ -58,8 +59,6 @@ DecodedInstruction = namedtuple("DecodedInstruction", ["address", "bytes", "text
 FLOW_COL = 3
 # Call argument annotation, shown after the disassembly.
 COMMENT_COL = 4
-# Indirect operands whose slot address the instruction alone determines, as distorm writes
-# them: "[0x405000]" and "[RIP+0x3af9]". See StaticSlotAddress.
 # An operand PatchDisasmText has already replaced with a symbol - `call testfunc`,
 # `mov rax, kernel32.dll!VirtualAlloc`. Those rows no longer carry a literal, so the address
 # has to come back out of the name. Only the mnemonics PatchDisasmText rewrites; a register
@@ -69,8 +68,6 @@ SYMBOL_OPERAND_RX = re.compile(
     re.IGNORECASE,
 )
 NAMES_WILDCARD = "Address names (*.txt)|*.txt|All files (*.*)|*.*"
-ABS_SLOT_RX = re.compile(r"^\[(0x[0-9A-Fa-f]+)\]$")
-RIP_SLOT_RX = re.compile(r"^\[RIP\s*([+-])\s*(0x[0-9A-Fa-f]+)\]$", re.IGNORECASE)
 
 def IsValidHexAddress(s: str) -> bool:
     try:
@@ -101,28 +98,6 @@ def ProtectText(prot: int | None) -> str:
     copy = "c" if prot & (0x08 | 0x80) else ""
     guard = "g" if prot & 0x100 else ""
     return f"{read}{write}{execute}{copy}{guard}"
-
-def StaticSlotAddress(operand: str, ripBase: int) -> int | None:
-    """The address an indirect operand reads, when the instruction alone determines it.
-
-    Covers the two forms an import slot is reached through - `[0x405000]` as distorm renders
-    32-bit absolute addressing, and `[RIP+0x3af9]` as it renders 64-bit rip-relative, where
-    the displacement is against the end of the instruction - and deliberately nothing else.
-
-    `[RAX+0x8]` is a vtable or a computed call: its slot depends on register values at this
-    break, so an answer cached against the instruction would be wrong at the next one. Those
-    stay on the Resolve Symbol menu item, where the user is asking about this break.
-    """
-    m = ABS_SLOT_RX.match(operand)
-    if m:
-        return int(m.group(1), 16)
-
-    m = RIP_SLOT_RX.match(operand)
-    if m:
-        displacement = int(m.group(2), 16)
-        return ripBase + displacement if m.group(1) == "+" else ripBase - displacement
-
-    return None
 
 def SetClipboard(text: str):
     clipboard = wx.TheClipboard
@@ -480,6 +455,13 @@ class DisassemblyListCtrl(wx.ListCtrl):
         miStepOut = menu.Append(wx.ID_ANY, "Step Out")
         miRunUntil = menu.Append(wx.ID_ANY, "Run Until")
         menu.AppendSeparator()
+        miGraph = menu.Append(wx.ID_ANY, "Graph From Here")
+        self.Bind(wx.EVT_MENU, lambda e: self.OnGraph(row, False), miGraph)
+        if (row < len(self.decodeCache) and self.decodeCache[row].text.upper().startswith("CALL")
+                and self.OperandAddressAt(row) is not None):
+            miGraphCall = menu.Append(wx.ID_ANY, "Graph Call Target")
+            self.Bind(wx.EVT_MENU, lambda e: self.OnGraph(row, True), miGraphCall)
+        menu.AppendSeparator()
         bpMenu = wx.Menu()
         for label, slot in (("Next", "next"), ("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("Software", "sw")):
             bpId = wx.NewIdRef()
@@ -719,6 +701,17 @@ class DisassemblyListCtrl(wx.ListCtrl):
             self.parent.SendCommand(CMD_RUN_UNTIL, payload)
         except ValueError:
             ui.message(f"Invalid address for Run Until: {addrStr}", "Error", wx.OK | wx.ICON_ERROR)
+
+    def OnGraph(self, row, callTarget: bool):
+        """Graph the function at this row, or at the target of the CALL on it."""
+        with self.cacheLock:
+            inst = self.decodeCache[row] if row < len(self.decodeCache) else None
+        if inst is None:
+            return
+        # OperandAddressAt rather than the row text: a renamed call shows its name, not 0x...
+        target = self.OperandAddressAt(row) if callTarget else inst.address
+        if target is not None:
+            self.parent.ShowGraph(target)
 
     def OnSetBreakpoint(self, row, slot):
         addrStr = self.GetItemText(row, 0).strip()

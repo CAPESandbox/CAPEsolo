@@ -35,6 +35,7 @@ from CAPEsolo.capelib.page_cache import (
     DistantPages,
     FindRegion,
     HotPages,
+    IsReadable,
     PageBase,
     PageChanged,
     PageHash,
@@ -68,6 +69,7 @@ from .debug_controls import (
     ThreadListCtrl,
     TraceDialog,
 )
+from .cfg_view import CfgWindow
 from .debug_pipe import CommandPipeHandler
 from .patch_assembler import Assembler
 from .patch_models import PatchEntry
@@ -372,6 +374,7 @@ class ConsolePanel(wx.Panel):
         # so larger dumps go out as consecutive requests and are written once all arrive.
         self.fileDump = None
         self.memoryMapDlg = None
+        self.cfgWindow = None
         self.searchResultsDlg = None
         self.lastSearchPattern = ""
         self.assembler = None
@@ -797,6 +800,22 @@ class ConsolePanel(wx.Panel):
         self.searchResultsDlg.SetResults(self.lastSearchPattern, reply["addresses"], reply["truncated"])
         self.searchResultsDlg.Show()
         self.searchResultsDlg.Raise()
+
+    def ShowGraph(self, entry: int):
+        """Graph the function at `entry` in the graph window, opening it if need be."""
+        if not self.cfgWindow:
+            self.cfgWindow = CfgWindow(self)
+        self.cfgWindow.Start(entry)
+        self.cfgWindow.Show()
+        self.cfgWindow.Raise()
+
+    def RequestGraphPage(self, page: int) -> bool:
+        """Fetch a page the graph needs; False if the map says it cannot be read."""
+        region = FindRegion(self.disassemblyConsole.pageMap, page)
+        if not region or not IsReadable(region[2]) or page in self.unreadablePages:
+            return False
+        self.RequestPage(page)
+        return True
 
     def ShowMemoryMap(self):
         """Open the memory map, or bring the open one forward with the current map."""
@@ -1496,8 +1515,11 @@ class ConsolePanel(wx.Panel):
         self.RenderDisassembly()
         self.RefreshViewState()
 
-    def ResolveCallSlots(self):
+    def ResolveCallSlots(self, instructions=None):
         """Name the indirect calls in the current view, one request per batch of slots.
+
+        `instructions` defaults to the disassembly's decode; the graph window passes its own,
+        which only need address, bytes (hex) and text.
 
         Runs by default after a decode, which the batch is what makes affordable: capemon
         sleeps 100ms between commands, so the per-slot memory dump this replaces cost ~110ms
@@ -1519,7 +1541,9 @@ class ConsolePanel(wx.Panel):
             return
 
         slots: dict[int, list[int]] = {}
-        for inst in getattr(self.disassemblyConsole, "decodeCache", []):
+        if instructions is None:
+            instructions = getattr(self.disassemblyConsole, "decodeCache", [])
+        for inst in instructions:
             if inst.address in self.resolvedExports:
                 continue
 
@@ -1609,6 +1633,8 @@ class ConsolePanel(wx.Panel):
         # Rows only: a batch can arrive several times per decode, and RefreshViewState would
         # put its six commands on the wire for each one.
         self.RenderDisassembly()
+        if self.cfgWindow:
+            self.cfgWindow.NamesChanged()
 
     def GetCip(self, data):
         m = re.search(r"0x[0-9a-fA-F]+", data)
@@ -1738,6 +1764,8 @@ class ConsolePanel(wx.Panel):
                 # Direct targets are named by the render above; the indirect ones were held
                 # back while there was nothing to name them from.
                 self.ResolveCallSlots()
+                if self.cfgWindow:
+                    self.cfgWindow.NamesChanged()
 
             return
 
@@ -2134,6 +2162,9 @@ class ConsolePanel(wx.Panel):
                 pageData = pageData[:expected]
 
             self.pageBuffers[pageBase] = pageData
+
+        if self.cfgWindow:
+            self.cfgWindow.PageArrived(pageBase, pageData if validPages else None)
 
         if not self.pendingPages:
             # DoHotDecode compares against the hashes from before this read to decide whether
@@ -2813,6 +2844,8 @@ class ConsolePanel(wx.Panel):
             # returns before reaching it and HandlePageMap would then window on a stale anchor.
             self.viewAnchor = cip
             self.AppendConsole(payload)
+            if self.cfgWindow:
+                self.cfgWindow.OnBreak()
             self.historyDisplay.AddStop(cip, self.NearestSymbol(cip) or self.ModuleNameFor(cip), ParseBreakTid(payload), BreakEvent(payload))
             if not self.IsAddressKnown(cip):
                 self.RefreshPageMap()

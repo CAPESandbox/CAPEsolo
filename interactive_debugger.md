@@ -128,6 +128,22 @@ export name works when only one module exports it. Exports load in the backgroun
 first break, so a module not read yet is not found. Use a hardware breakpoint for an API:
 software breakpoints are refused in system DLLs.
 
+### Graph View
+
+Right-click the disassembly and choose **Graph From Here** (the selected row is taken as the
+function's entry - there are no symbols to find it) or, on a direct CALL, **Graph Call Target**.
+The graph opens in its own window: basic blocks top to bottom, conditional jumps green when
+taken and red when not, unconditional flow blue, loops routed up the right-hand side. The
+block holding CIP has a green border; CIP, breakpoint and traced instructions are coloured as
+in the disassembly and follow each stop.
+
+Click an instruction to show it in the disassembly; double-click a jump to centre on its
+target, or a direct call to graph the callee (**Back** returns). Ctrl+wheel or the zoom buttons
+zoom, **Fit** shows the whole graph, and dragging empty space pans. The code is read through
+the debugger as needed; **Refresh** reads it again after it has been unpacked or patched.
+Calls fall through; a path ends at a return, an indirect jump (a switch table, a jump through a
+register) or unreadable memory, and the graph stops at 500 blocks.
+
 ### Hit counts
 
 **Break on hit** in the Set Breakpoint dialog (or `hits=N` on `bp`) passes over the first N-1
