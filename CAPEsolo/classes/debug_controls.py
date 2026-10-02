@@ -469,6 +469,11 @@ class DisassemblyListCtrl(wx.ListCtrl):
         miStepOut = menu.Append(wx.ID_ANY, "Step Out")
         miRunUntil = menu.Append(wx.ID_ANY, "Run Until")
         menu.AppendSeparator()
+        miXrefs = menu.Append(wx.ID_ANY, "Xrefs To Here")
+        self.Bind(wx.EVT_MENU, lambda e: self.OnXrefs(row, False), miXrefs)
+        if self.OperandAddressAt(row) is not None:
+            miXrefsOperand = menu.Append(wx.ID_ANY, "Xrefs To Operand Target")
+            self.Bind(wx.EVT_MENU, lambda e: self.OnXrefs(row, True), miXrefsOperand)
         miGraph = menu.Append(wx.ID_ANY, "Graph From Here")
         self.Bind(wx.EVT_MENU, lambda e: self.OnGraph(row, False), miGraph)
         if (row < len(self.decodeCache) and self.decodeCache[row].text.upper().startswith("CALL")
@@ -715,6 +720,20 @@ class DisassemblyListCtrl(wx.ListCtrl):
             self.parent.SendCommand(CMD_RUN_UNTIL, payload)
         except ValueError:
             ui.message(f"Invalid address for Run Until: {addrStr}", "Error", wx.OK | wx.ICON_ERROR)
+
+    def OnXrefs(self, row, operand: bool):
+        """Find what refers to this row's address, or to the address its operand names.
+
+        For the operand, the search covers this row's module: references from this code to an
+        import slot, or to an API in another module, are the ones being asked about.
+        """
+        try:
+            here = int(self.GetItemText(row, 0), 16)
+        except ValueError:
+            return
+        target = self.OperandAddressAt(row) if operand else here
+        if target is not None:
+            self.parent.RequestXrefs(target, here if operand else None)
 
     def OnGraph(self, row, callTarget: bool):
         """Graph the function at this row, or at the target of the CALL on it."""
@@ -2346,6 +2365,72 @@ class SearchResultsDialog(ui.Dialog):
         if 0 <= row < len(self.addresses):
             addr = self.addresses[row]
             self.console.SendCommand(CMD_MEM_DUMP, f"{addr:#x}", tag=self.console.NextTag(TAG_DUMP))
+
+
+class XrefsDialog(ui.Dialog):
+    """The references found by the last Xrefs request. Modeless; a new request replaces them."""
+
+    def __init__(self, console):
+        super().__init__(
+            console, title="Cross-References", size=wx.Size(600, 480), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
+        )
+        self.console = console
+        self.refs: list[dict] = []
+        self.summary = wx.StaticText(self, label="")
+        self.listCtrl = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.listCtrl.InsertColumn(0, "Address", width=150)
+        self.listCtrl.InsertColumn(1, "Kind", width=60)
+        self.listCtrl.InsertColumn(2, "Where", width=320)
+        self.listCtrl.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
+        self.listCtrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self.GoTo(e.GetIndex()))
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.summary, 0, wx.ALL, 10)
+        sizer.Add(self.listCtrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        sizer.Add(ui.Button(self, wx.ID_CANCEL, "Close", variant=ui.PRIMARY), 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        self.SetSizer(sizer)
+        apply_theme(self)
+        self.listCtrl.SetFont(FONT_CODE)
+
+    def SetResults(self, target: int, refs: list[dict], truncated: bool):
+        self.refs = refs
+        self.listCtrl.Freeze()
+        try:
+            self.listCtrl.DeleteAllItems()
+            for i, ref in enumerate(refs):
+                row = self.listCtrl.InsertItem(i, f"{ref['address']:016X}")
+                self.listCtrl.SetItem(row, 1, ref["kind"])
+                # The enclosing function's name when one is known, else the module.
+                where = self.console.NearestSymbol(ref["address"]) or self.console.ModuleNameFor(ref["address"])
+                self.listCtrl.SetItem(row, 2, where)
+        finally:
+            self.listCtrl.Thaw()
+
+        name = self.console.SymbolFor(target)
+        self.summary.SetLabel(
+            f"{len(refs)} reference{'s' if len(refs) != 1 else ''} to {name + ' ' if name else ''}{target:#x}"
+            + (" (stopped at the limit)" if truncated else "")
+        )
+
+    def GoTo(self, row):
+        if 0 <= row < len(self.refs):
+            self.console.disassemblyConsole.NavigateTo(self.refs[row]["address"])
+
+    def OnContextMenu(self, event):
+        row = self.listCtrl.GetFirstSelected()
+        if row == -1:
+            return
+
+        addr = self.refs[row]["address"]
+        menu = wx.Menu()
+        miGoTo = menu.Append(wx.ID_ANY, "Go To")
+        miGraph = menu.Append(wx.ID_ANY, "Graph From Here")
+        miCopy = menu.Append(wx.ID_ANY, "Copy Address")
+        self.Bind(wx.EVT_MENU, lambda e: self.GoTo(row), miGoTo)
+        self.Bind(wx.EVT_MENU, lambda e: self.console.ShowGraph(addr), miGraph)
+        self.Bind(wx.EVT_MENU, lambda e: CopyText(f"{addr:#x}"), miCopy)
+        self.PopupMenu(menu)
+        menu.Destroy()
 
 
 class ExportsDialog(ui.Dialog):

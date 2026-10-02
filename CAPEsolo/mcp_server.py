@@ -46,6 +46,7 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_STEP_OVER,
     CMD_THREADS,
     CMD_TRACE,
+    CMD_XREFS,
 )
 from CAPEsolo.capelib.config_paths import config_paths
 from CAPEsolo.capelib.cfg import MAX_BLOCKS, BuildCfg, CallOperand, LayoutCfg, StaticSlotAddress
@@ -1628,6 +1629,41 @@ class AnalysisJobManager:
             "blocks": blocks,
         }
 
+    def debugger_xrefs(self, address: Any, scope: Any = "") -> dict[str, Any]:
+        """References to address within the module containing scope (address's own by default)."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        target = self._dbg.ParseAddress(address)
+        if target is None:
+            return {"ok": False, "error": f"Invalid address: {address}"}
+        data = f"{MCP_DUMP_TAG}|{target:#x}"
+        if scope not in (None, ""):
+            scopeAddr = self._dbg.ParseAddress(scope)
+            if scopeAddr is None:
+                return {"ok": False, "error": f"Invalid scope address: {scope}"}
+            data += f"|{scopeAddr:#x}"
+
+        payload = session.SendCommand(CMD_XREFS, data, self._dbg.DEFAULT_BREAK_TIMEOUT)
+        if payload is None:
+            return {"ok": False, "error": f"Debugger command {CMD_XREFS} timed out."}
+        reply = self._dbg.ParseXrefs(payload)
+        if not reply["ok"]:
+            return {"ok": False, "error": reply["error"]}
+
+        modules = self.debugger_list_modules().get("modules") or []
+        return {
+            "ok": True,
+            "target": f"{target:#x}",
+            "count": reply["count"],
+            "truncated": reply["truncated"],
+            "refs": [
+                {"address": f"{ref['address']:#x}", "kind": ref["kind"], "module": self._dbg.ModuleOf(modules, ref["address"])}
+                for ref in reply["refs"]
+            ],
+        }
+
     def _load_page(self, session: Any, pageBase: int) -> bytes | None:
         """One page of the target's memory, or None where it cannot be read."""
         payload, error = self._command(session, CMD_PAGE_LOAD, f"{MCP_DUMP_TAG}|{pageBase:#x}")
@@ -2286,6 +2322,22 @@ if mcp:
         include_instructions=false returns the structure without instruction text.
         """
         return manager.debugger_cfg(address, max_blocks, include_instructions)
+
+
+    @mcp.tool()
+    def capesolo_dbg_xrefs(address: str, scope: str = "") -> dict[str, Any]:
+        """Cross-references: every instruction that calls, jumps to, or reads/writes/loads
+        address - a function, a global, an import slot.
+
+        The monitor decodes the executable code of one module in-process in one command: the
+        module containing scope, or address's own when scope is omitted. To find a sample's
+        calls to an API in another module, pass the API (or its import slot) as address and any
+        address inside the sample as scope. kind is call, jmp or jcc for control flow (a call
+        through the import slot counts as call), data for a memory operand, imm for the address
+        as an immediate (push / mov reg, offset). At most 1000; truncated says the cap was hit.
+        A linear sweep, so code reached only through obfuscation may be missed.
+        """
+        return manager.debugger_xrefs(address, scope)
 
 
     @mcp.tool()

@@ -153,6 +153,16 @@ the common compiler shapes (x86 `jmp [reg*4+table]`, x64 MSVC image-base RVA tab
 GCC/clang relative tables), when a bounds check before the jump gives the case count; without
 one the jump stays indirect rather than guessing the table's size.
 
+### Cross-references
+
+Right-click the disassembly (or a graph instruction) for **Xrefs To Here** - what calls, jumps
+to, or references this address - or, on an instruction with an address operand, **Xrefs To
+Operand Target**, which searches this row's module: on `call [import slot]` it lists every call
+to that API from this module. The monitor decodes the module's code in-process, so it is quick
+even on a large image. The references open in a list (kind call, jmp, jcc, data or imm, and the
+enclosing function where it is named); double-click to go to one, or right-click to graph it.
+At most 1000 are listed.
+
 ### Hit counts
 
 **Break on hit** in the Set Breakpoint dialog (or `hits=N` on `bp`) passes over the first N-1

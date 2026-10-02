@@ -17,7 +17,14 @@ from CAPEsolo.capelib.api_protos import AppendUserPrototype, LoadPrototypes, Par
 from CAPEsolo.capelib.call_args import PROTECT_VALUES, CallArguments, ParseRegisters
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.console_commands import HelpText, ParseCommand
-from CAPEsolo.capelib.debug_session import MAX_DUMP_SIZE, ParseBreakTid, ParseDumpRegion, ParseMemorySearch, ParseTrace
+from CAPEsolo.capelib.debug_session import (
+    MAX_DUMP_SIZE,
+    ParseBreakTid,
+    ParseDumpRegion,
+    ParseMemorySearch,
+    ParseTrace,
+    ParseXrefs,
+)
 from CAPEsolo.capelib.symbol_names import (
     Absolute,
     IsValidName,
@@ -68,6 +75,7 @@ from .debug_controls import (
     StaticSlotAddress,
     ThreadListCtrl,
     TraceDialog,
+    XrefsDialog,
 )
 from .cfg_view import CfgWindow
 from .debug_pipe import CommandPipeHandler
@@ -118,6 +126,7 @@ TAG_PTRS = "PTRS"
 TAG_TRACE = "TRACE"
 TAG_PAYLOAD = "PAYLOAD"
 TAG_SEARCH = "SEARCH"
+TAG_XREFS = "XREFS"
 def BreakEvent(payload: str) -> str:
     """The kind of stop a break line reports: "Breakpoint 0", "Software breakpoint", "Single step"."""
     head = payload.split(" => ")[0] if " => " in payload else payload.split(" at ")[0]
@@ -376,6 +385,8 @@ class ConsolePanel(wx.Panel):
         self.memoryMapDlg = None
         self.cfgWindow = None
         self.searchResultsDlg = None
+        self.xrefsDlg = None
+        self.lastXrefTarget = None
         self.lastSearchPattern = ""
         self.assembler = None
         self.firstBreak = True
@@ -800,6 +811,29 @@ class ConsolePanel(wx.Panel):
         self.searchResultsDlg.SetResults(self.lastSearchPattern, reply["addresses"], reply["truncated"])
         self.searchResultsDlg.Show()
         self.searchResultsDlg.Raise()
+
+    def RequestXrefs(self, target: int, scope: int | None = None):
+        """Find references to `target` in the module containing `scope` (target's own by
+        default). The monitor sweeps the code in-process; the results open in a list."""
+        self.lastXrefTarget = target
+        name = self.SymbolFor(target)
+        self.AppendConsole(f"Finding references to {name + ' ' if name else ''}{target:#x}...")
+        data = f"{target:#x}" + (f"|{scope:#x}" if scope is not None else "")
+        self.SendCommand(CMD_XREFS, data, tag=self.NextTag(TAG_XREFS))
+
+    def HandleXrefs(self, payload):
+        reply = ParseXrefs(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Xrefs failed: {reply['error']}")
+            return
+
+        self.AppendConsole(f"Found {reply['count']} reference{'s' if reply['count'] != 1 else ''}"
+                           + (" (stopped at the limit)" if reply["truncated"] else ""))
+        if not self.xrefsDlg:
+            self.xrefsDlg = XrefsDialog(self)
+        self.xrefsDlg.SetResults(self.lastXrefTarget or 0, reply["refs"], reply["truncated"])
+        self.xrefsDlg.Show()
+        self.xrefsDlg.Raise()
 
     def ShowGraph(self, entry: int):
         """Graph the function at `entry` in the graph window, opening it if need be."""
@@ -1318,6 +1352,7 @@ class ConsolePanel(wx.Panel):
             CMD_TRACE: self.HandleTrace,
             CMD_DUMP_REGION: self.HandleDumpRegion,
             CMD_MEMORY_SEARCH: self.HandleMemorySearch,
+            CMD_XREFS: self.HandleXrefs,
         }
 
         if command in CMD_CONSOLE:

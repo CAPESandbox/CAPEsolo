@@ -323,6 +323,25 @@ def ParseMemorySearch(payload: str) -> dict[str, Any]:
         return {"ok": False, "error": f"Unexpected search reply: {payload[:120]}"}
 
 
+def ParseXrefs(payload: str) -> dict[str, Any]:
+    """An XR reply: `<tag>|<count>|<more>|<addr>:<kind>,...` or `<tag>|Failed ...`."""
+    parts = payload.strip().split("|")
+    if len(parts) >= 2 and parts[1].startswith("Failed"):
+        return {"ok": False, "error": "|".join(parts[1:]).strip()}
+    if len(parts) != 4:
+        return {"ok": False, "error": f"Unexpected xref reply: {payload[:120]}"}
+
+    try:
+        refs = []
+        for entry in parts[3].split(","):
+            if entry:
+                addr, kind = entry.split(":", 1)
+                refs.append({"address": int(addr, 16), "kind": kind})
+        return {"ok": True, "count": int(parts[1]), "truncated": parts[2] == "1", "refs": refs}
+    except ValueError:
+        return {"ok": False, "error": f"Unexpected xref reply: {payload[:120]}"}
+
+
 def ParseCallStack(payload: str) -> list[dict[str, str]]:
     """Parse walked frames of the form 'index,returnAddress,framePointer,callSiteBytes'.
 

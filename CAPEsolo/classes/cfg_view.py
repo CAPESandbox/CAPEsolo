@@ -415,6 +415,11 @@ class GraphCanvas(wx.ScrolledWindow):
         self.Bind(wx.EVT_MENU, lambda e: SetClipboard(f"{addr:#x}"), item)
 
         menu.AppendSeparator()
+        item = menu.Append(wx.ID_ANY, "Xrefs To Here")
+        self.Bind(wx.EVT_MENU, lambda e: console.RequestXrefs(addr), item)
+        if operand is not None:
+            item = menu.Append(wx.ID_ANY, "Xrefs To Operand Target")
+            self.Bind(wx.EVT_MENU, lambda e: console.RequestXrefs(operand, addr), item)
         item = menu.Append(wx.ID_ANY, "Graph From Here")
         self.Bind(wx.EVT_MENU, lambda e: self.window.Start(addr), item)
         self.PopupMenu(menu)
