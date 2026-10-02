@@ -12,6 +12,7 @@ from CAPEsolo.capelib.console_commands import (
     LOCAL_COMMANDS,
     HelpText,
     ParseCommand,
+    SearchPatternHex,
 )
 
 
@@ -222,3 +223,31 @@ def test_unknown_name_is_rejected():
 
 def test_names_are_not_resolved_without_a_resolver():
     assert "known name" in Err("bp kernel32!VirtualAlloc")
+
+
+def test_breakpoint_hit_count_adds_a_fifth_field():
+    assert Ok("bp 401000 hits=50") == ("BP", "next|0X401000|x|1|50")
+    assert Ok("bp 401000 sw hits=3") == ("BP", "sw|0X401000|x|1|3")
+    assert Ok("bp 401000 hits=1") == ("BP", "next|0X401000|x|1")
+
+
+def test_breakpoint_rejects_a_bad_hit_count():
+    assert "hit count" in Err("bp 401000 hits=0")
+    assert "hit count" in Err("bp 401000 hits=x")
+
+
+def test_search_pattern_hex_accepts_spaced_and_contiguous_hex_with_wildcards():
+    assert SearchPatternHex("4d 5a ?? 00", "hex") == "4D5A??00"
+    assert SearchPatternHex("4d5a9000", "hex") == "4D5A9000"
+    assert SearchPatternHex("4D 5A ? 00", "hex") == "4D5A??00"
+
+
+def test_search_pattern_hex_encodes_text():
+    assert SearchPatternHex("MZ", "ascii") == "4D5A"
+    assert SearchPatternHex("ab", "utf16") == "61006200"
+
+
+def test_search_pattern_hex_rejects_bad_hex_and_empty_input():
+    assert SearchPatternHex("4G", "hex") is None
+    assert SearchPatternHex("4d5", "hex") is None
+    assert SearchPatternHex("", "hex") is None

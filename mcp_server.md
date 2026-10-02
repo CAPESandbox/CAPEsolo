@@ -281,6 +281,7 @@ and a short disassembly window in one response.
 | `capesolo_dbg_get_stack` | Stack window around the stack pointer. |
 | `capesolo_dbg_read_memory` | Up to 16384 bytes, returned as hex, in one request. A read that hits unreadable memory reports `bytes_read`. |
 | `capesolo_dbg_dump_region` | Save up to 16 MB of the target's memory as a CAPE payload (`CAPE/<sha256>` plus a `files.json` entry, with the target's pid), so the Payloads, Yara and Configs processing examines it. The monitor copies the range in-process in one command (DR) while the thread is halted. Unreadable pages are zero-filled and counted; a wholly unreadable range fails. `type_string` labels the payload. The result reports the guest path, the sha256, and whether the upload has arrived. A report already built for the job is dropped so the next one includes the dump. |
+| `capesolo_dbg_search_memory` | Search the target for a pattern in-process in one command (MS): `kind` `hex` (byte pairs, `??` any byte), `ascii` or `utf16`. All readable memory (the monitor's own image skipped) unless `start` and `size` are given. At most 1000 matches, each with its module; `truncated` says the cap was hit. |
 | `capesolo_dbg_disassemble` | Defaults to the current instruction pointer. |
 | `capesolo_dbg_list_modules` | Loaded modules with base addresses, sizes and paths. |
 | `capesolo_dbg_list_threads` | Threads with start addresses; the current thread is flagged. |
@@ -290,7 +291,7 @@ and a short disassembly window in one response.
 
 | Tool | Description |
 |------|-------------|
-| `capesolo_dbg_set_breakpoint` | `slot` is `next` or a debug register `0`-`3`, or `sw` for a software (int3) breakpoint: execute only, unlimited, stops every thread, refused in system DLLs and monitor code. |
+| `capesolo_dbg_set_breakpoint` | `slot` is `next` or a debug register `0`-`3`, or `sw` for a software (int3) breakpoint: execute only, unlimited, stops every thread, refused in system DLLs and monitor code. `hits` breaks on that hit instead of the first; `list_breakpoints` reports the hits still to pass over as `skip`. |
 | `capesolo_dbg_delete_breakpoint` | Delete by debug register number, or by `address` for a software breakpoint. |
 | `capesolo_dbg_set_register` | Decimal or `0x`-prefixed hex value. |
 | `capesolo_dbg_set_cip` | Move the instruction pointer; picks EIP or RIP by bitness. |

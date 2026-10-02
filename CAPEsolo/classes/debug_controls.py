@@ -10,6 +10,7 @@ import wx
 
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.api_protos import user_prototypes_path
+from CAPEsolo.capelib.console_commands import SearchPatternHex
 from CAPEsolo.capelib.flow_arrows import GUTTER_WIDTH, BranchLanes
 from CAPEsolo.capelib.page_cache import (
     REGION_FREED,
@@ -1795,16 +1796,19 @@ class BreakpointsListCtrl(wx.ListCtrl):
         self.InsertColumn(1, "Address", width=160)
         self.InsertColumn(2, "Type", width=50)
         self.InsertColumn(3, "Size", width=45)
+        # Hits the breakpoint still passes over before it breaks (Break on hit N starts at N-1).
+        self.InsertColumn(4, "Skip", width=50)
         self.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
 
-    def UpdateData(self, bps: list[tuple[str, str, str, str]]):
-        """Populate the list with (dr, address, type, size)."""
+    def UpdateData(self, bps: list[tuple[str, str, str, str, str]]):
+        """Populate the list with (dr, address, type, size, skip)."""
         self.DeleteAllItems()
-        for i, (dr, addr, bpType, size) in enumerate(bps):
+        for i, (dr, addr, bpType, size, skip) in enumerate(bps):
             row = self.InsertItem(i, dr)
             self.SetItem(row, 1, addr)
             self.SetItem(row, 2, BP_TYPE_LABELS.get(bpType, bpType))
             self.SetItem(row, 3, size)
+            self.SetItem(row, 4, skip)
 
     def OnContextMenu(self, event):
         pos = event.GetPosition()
@@ -2098,8 +2102,10 @@ class MemoryMapDialog(ui.Dialog):
         miDisassemble = menu.Append(wx.ID_ANY, "Disassemble")
         miDump = menu.Append(wx.ID_ANY, "Dump Address")
         miPayload = menu.Append(wx.ID_ANY, "Dump as Payload...")
+        miSearch = menu.Append(wx.ID_ANY, "Search This Region...")
         miCopy = menu.Append(wx.ID_ANY, "Copy Address")
         base, size = self.shown[row][0], self.shown[row][1]
+        self.Bind(wx.EVT_MENU, lambda e: self.console.PromptMemorySearch(base, size), miSearch)
         self.Bind(wx.EVT_MENU, lambda e: self.OnDisassemble(row), miDisassemble)
         self.Bind(
             wx.EVT_MENU,
@@ -2119,6 +2125,220 @@ class MemoryMapDialog(ui.Dialog):
         if wx.TheClipboard.Open():
             wx.TheClipboard.SetData(wx.TextDataObject(f"{base:#x}"))
             wx.TheClipboard.Close()
+
+
+class BreakHistoryListCtrl(wx.ListCtrl):
+    """Every stop of the session, newest first: where it was, which thread, and why."""
+
+    MAX_ENTRIES = 1000
+
+    def __init__(self, parent, console=None):
+        super().__init__(parent, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        # `console` separates the wx parent from the ConsolePanel these controls call
+        # back into: with the splitter layout the wx parent is a splitter pane.
+        self.parent = console or parent
+        self.stops = 0
+        self.InsertColumn(0, "#", width=50)
+        self.InsertColumn(1, "Address", width=140)
+        self.InsertColumn(2, "Symbol", width=220)
+        self.InsertColumn(3, "TID", width=60)
+        self.InsertColumn(4, "Event", width=160)
+        self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self.GoTo(e.GetIndex()))
+        self.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
+
+    def AddStop(self, addr: int, symbol: str, tid, event: str):
+        self.stops += 1
+        row = self.InsertItem(0, str(self.stops))
+        self.SetItem(row, 1, f"{addr:016X}")
+        self.SetItem(row, 2, symbol)
+        self.SetItem(row, 3, "" if tid is None else str(tid))
+        self.SetItem(row, 4, event)
+        if self.GetItemCount() > self.MAX_ENTRIES:
+            self.DeleteItem(self.GetItemCount() - 1)
+
+    def RowAddress(self, row: int) -> int | None:
+        try:
+            return int(self.GetItemText(row, 1), 16)
+        except ValueError:
+            return None
+
+    def GoTo(self, row):
+        addr = self.RowAddress(row)
+        if addr is not None:
+            self.parent.disassemblyConsole.NavigateTo(addr)
+
+    def OnContextMenu(self, event):
+        row = self.GetFirstSelected()
+        if row == -1:
+            return
+
+        menu = wx.Menu()
+        miGoTo = menu.Append(wx.ID_ANY, "Go To")
+        miCopy = menu.Append(wx.ID_ANY, "Copy Address")
+        self.Bind(wx.EVT_MENU, lambda e: self.GoTo(row), miGoTo)
+        self.Bind(wx.EVT_MENU, lambda e: CopyText(f"0x{self.GetItemText(row, 1)}"), miCopy)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+
+def CopyText(text: str):
+    if wx.TheClipboard.Open():
+        wx.TheClipboard.SetData(wx.TextDataObject(text))
+        wx.TheClipboard.Close()
+
+
+SEARCH_KINDS = (("Hex bytes", "hex"), ("ASCII", "ascii"), ("UTF-16", "utf16"))
+
+
+class SearchMemoryDialog(ui.Dialog):
+    """Pattern and range for a memory search (capemon's MS command)."""
+
+    def __init__(self, parent, start: str = "", size: str = ""):
+        super().__init__(parent, title="Search Memory", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+
+        grid = wx.FlexGridSizer(rows=0, cols=2, hgap=8, vgap=8)
+        grid.AddGrowableCol(1, 1)
+
+        grid.Add(wx.StaticText(self, label="Pattern:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        patternField = ui.Field(self)
+        self.patternCtrl = patternField.ctrl
+        grid.Add(patternField, flag=wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="As:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        self.kindCtrl = ui.Picker(self, choices=[label for label, _ in SEARCH_KINDS])
+        self.kindCtrl.SetSelection(0)
+        grid.Add(self.kindCtrl, flag=wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Start:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        startField = ui.Field(self, value=start)
+        self.startCtrl = startField.ctrl
+        grid.Add(startField, flag=wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Size:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        sizeField = ui.Field(self, value=size)
+        self.sizeCtrl = sizeField.ctrl
+        grid.Add(sizeField, flag=wx.EXPAND)
+
+        note = wx.StaticText(
+            self,
+            label="Leave Start empty to search all readable memory (the monitor's own image is skipped).\n"
+            "In hex, ?? matches any byte. At most 1000 matches are reported.",
+        )
+
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
+        outer.Add(note, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        outer.Add(ui.dialog_buttons(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.SetSizer(outer)
+        self.Bind(wx.EVT_BUTTON, self.OnOk, id=wx.ID_OK)
+        apply_theme(self)
+        # After apply_theme, which would replace it with the UI font.
+        for ctrl in (self.patternCtrl, self.startCtrl, self.sizeCtrl):
+            ctrl.SetFont(FONT_CODE)
+        note.SetForegroundColour(FG_SECONDARY)
+        self.patternCtrl.SetMinSize(wx.Size(self.patternCtrl.GetTextExtent("0" * 48)[0], -1))
+        self.Fit()
+        self.SetMinSize(self.GetSize())
+
+    def OnOk(self, event):
+        if self.GetValues() is not None:
+            self.EndModal(wx.ID_OK)
+
+    def GetValues(self):
+        """Return (hex pattern, start, size) - start and size 0 for all memory - or None."""
+        kind = SEARCH_KINDS[self.kindCtrl.GetSelection()][1]
+        pattern = SearchPatternHex(self.patternCtrl.GetValue().strip(), kind)
+        if not pattern:
+            ui.message("Enter a pattern; in hex, whole bytes or ?? only.", "Search Memory", wx.OK | wx.ICON_ERROR)
+            return None
+        if len(pattern) // 2 > 256:
+            ui.message("The pattern can be at most 256 bytes.", "Search Memory", wx.OK | wx.ICON_ERROR)
+            return None
+
+        startText = self.startCtrl.GetValue().strip()
+        if not startText:
+            return pattern, 0, 0
+
+        start = self.GetParent().AddressFromText(startText)
+        if start is None:
+            ui.message(f"'{startText}' is not a valid address or known name.", "Search Memory", wx.OK | wx.ICON_ERROR)
+            return None
+
+        try:
+            size = int(self.sizeCtrl.GetValue().strip(), 16)
+        except ValueError:
+            size = 0
+        if size < 1:
+            ui.message("Give a size (hex) for a search from a start address.", "Search Memory", wx.OK | wx.ICON_ERROR)
+            return None
+
+        return pattern, start, size
+
+
+class SearchResultsDialog(ui.Dialog):
+    """The matches of the last memory search. Modeless; a new search replaces its contents."""
+
+    def __init__(self, console):
+        super().__init__(
+            console, title="Search Results", size=wx.Size(560, 480), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
+        )
+        self.console = console
+        self.addresses: list[int] = []
+        self.summary = wx.StaticText(self, label="")
+        self.listCtrl = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.listCtrl.InsertColumn(0, "Address", width=150)
+        self.listCtrl.InsertColumn(1, "Protect", width=80)
+        self.listCtrl.InsertColumn(2, "Module", width=260)
+        self.listCtrl.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
+        self.listCtrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self.Dump(e.GetIndex()))
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.summary, 0, wx.ALL, 10)
+        sizer.Add(self.listCtrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        sizer.Add(ui.Button(self, wx.ID_CANCEL, "Close", variant=ui.PRIMARY), 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        self.SetSizer(sizer)
+        apply_theme(self)
+        self.listCtrl.SetFont(FONT_CODE)
+
+    def SetResults(self, pattern: str, addresses: list[int], truncated: bool):
+        self.addresses = addresses
+        pageMap = self.console.disassemblyConsole.pageMap
+        self.listCtrl.Freeze()
+        try:
+            self.listCtrl.DeleteAllItems()
+            for i, addr in enumerate(addresses):
+                region = FindRegion(pageMap, addr)
+                row = self.listCtrl.InsertItem(i, f"{addr:016X}")
+                self.listCtrl.SetItem(row, 1, ProtectText(region[2]) if region else "")
+                self.listCtrl.SetItem(row, 2, self.console.ModuleNameFor(addr))
+        finally:
+            self.listCtrl.Thaw()
+
+        shown = pattern if len(pattern) <= 48 else pattern[:48] + "..."
+        self.summary.SetLabel(
+            f"{len(addresses)} match{'es' if len(addresses) != 1 else ''} for {shown}"
+            + (" (stopped at the limit)" if truncated else "")
+        )
+
+    def OnContextMenu(self, event):
+        row = self.listCtrl.GetFirstSelected()
+        if row == -1:
+            return
+
+        menu = wx.Menu()
+        miDump = menu.Append(wx.ID_ANY, "Dump Address")
+        miDisassemble = menu.Append(wx.ID_ANY, "Disassemble")
+        miCopy = menu.Append(wx.ID_ANY, "Copy Address")
+        self.Bind(wx.EVT_MENU, lambda e: self.Dump(row), miDump)
+        self.Bind(wx.EVT_MENU, lambda e: self.console.disassemblyConsole.NavigateTo(self.addresses[row]), miDisassemble)
+        self.Bind(wx.EVT_MENU, lambda e: CopyText(f"{self.addresses[row]:#x}"), miCopy)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def Dump(self, row):
+        if 0 <= row < len(self.addresses):
+            addr = self.addresses[row]
+            self.console.SendCommand(CMD_MEM_DUMP, f"{addr:#x}", tag=self.console.NextTag(TAG_DUMP))
 
 
 class ExportsDialog(ui.Dialog):
@@ -2270,6 +2490,11 @@ class BreakpointDialog(ui.Dialog):
         self.slotCtrl.SetSelection(0)
         grid.Add(self.slotCtrl, flag=wx.EXPAND)
 
+        grid.Add(wx.StaticText(self, label="Break on hit:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        hitsField = ui.Field(self, value="1")
+        self.hitsCtrl = hitsField.ctrl
+        grid.Add(hitsField, flag=wx.EXPAND)
+
         outer = wx.BoxSizer(wx.VERTICAL)
         outer.Add(grid, 1, wx.EXPAND | wx.ALL, 10)
         buttons = ui.dialog_buttons(self)
@@ -2307,7 +2532,7 @@ class BreakpointDialog(ui.Dialog):
         self.EndModal(wx.ID_OK)
 
     def GetValues(self):
-        """Return (slot, type, size, address) or None, reporting why if it is invalid."""
+        """Return (slot, type, size, address, hits) or None, reporting why if it is invalid."""
         text = self.addressCtrl.GetValue().strip()
         # The console resolves names too (kernel32!VirtualAlloc, a rename); it is the parent.
         address = self.GetParent().AddressFromText(text)
@@ -2333,7 +2558,12 @@ class BreakpointDialog(ui.Dialog):
             ui.message("A software breakpoint is execute only.", "Set Breakpoint", wx.OK | wx.ICON_ERROR)
             return None
 
-        return slot, bpType, size, address
+        hitsText = self.hitsCtrl.GetValue().strip()
+        if not hitsText.isdigit() or int(hitsText) < 1:
+            ui.message("Break on hit must be a whole number, 1 or more.", "Set Breakpoint", wx.OK | wx.ICON_ERROR)
+            return None
+
+        return slot, bpType, size, address, int(hitsText)
 
 
 class TraceDialog(ui.Dialog):

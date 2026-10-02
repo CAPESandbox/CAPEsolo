@@ -17,7 +17,7 @@ from CAPEsolo.capelib.api_protos import AppendUserPrototype, LoadPrototypes, Par
 from CAPEsolo.capelib.call_args import PROTECT_VALUES, CallArguments, ParseRegisters
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.console_commands import HelpText, ParseCommand
-from CAPEsolo.capelib.debug_session import MAX_DUMP_SIZE, ParseDumpRegion, ParseTrace
+from CAPEsolo.capelib.debug_session import MAX_DUMP_SIZE, ParseBreakTid, ParseDumpRegion, ParseMemorySearch, ParseTrace
 from CAPEsolo.capelib.symbol_names import (
     Absolute,
     IsValidName,
@@ -46,6 +46,7 @@ from CAPEsolo.lib.core.pipe import PipeDispatcher, PipeServer, disconnect_pipes
 
 from . import ui_kit as ui
 from .debug_controls import (
+    BreakHistoryListCtrl,
     BreakpointDialog,
     BreakpointsListCtrl,
     CallStackListCtrl,
@@ -56,6 +57,8 @@ from .debug_controls import (
     MemDumpListCtrl,
     MemoryListCtrl,
     MemoryMapDialog,
+    SearchMemoryDialog,
+    SearchResultsDialog,
     ModulesListCtrl,
     PrototypeDialog,
     RegsTextCtrl,
@@ -112,6 +115,13 @@ TAG_PAGE = "PAGE"
 TAG_PTRS = "PTRS"
 TAG_TRACE = "TRACE"
 TAG_PAYLOAD = "PAYLOAD"
+TAG_SEARCH = "SEARCH"
+def BreakEvent(payload: str) -> str:
+    """The kind of stop a break line reports: "Breakpoint 0", "Software breakpoint", "Single step"."""
+    head = payload.split(" => ")[0] if " => " in payload else payload.split(" at ")[0]
+    return head.strip()[:40]
+
+
 # debug_session.TRACE_REASONS values as the console reports them.
 TRACE_STOP_TEXT = {
     "stop_at": "reached the stop address",
@@ -362,6 +372,8 @@ class ConsolePanel(wx.Panel):
         # so larger dumps go out as consecutive requests and are written once all arrive.
         self.fileDump = None
         self.memoryMapDlg = None
+        self.searchResultsDlg = None
+        self.lastSearchPattern = ""
         self.assembler = None
         self.firstBreak = True
         self.CMD_PAGE_MAP = None
@@ -447,6 +459,9 @@ class ConsolePanel(wx.Panel):
         btnDumpToFile = ui.Button(memPane, label="Dump Memory to File")
         btnDumpToFile.Bind(wx.EVT_BUTTON, self.OnDumpToFile)
         memInput.Add(btnDumpToFile, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
+        btnSearch = ui.Button(memPane, label="Search Memory...")
+        btnSearch.Bind(wx.EVT_BUTTON, lambda evt: self.PromptMemorySearch())
+        memInput.Add(btnSearch, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
         memSizer.Add(memInput, 0, wx.EXPAND | wx.ALL, 5)
         memPane.SetSizer(memSizer)
 
@@ -524,6 +539,14 @@ class ConsolePanel(wx.Panel):
         memoryPageSizer.Add(self.memoryDisplay, 1, wx.EXPAND | wx.ALL, 3)
         memoryPage.SetSizer(memoryPageSizer)
         self.modulesNotebook.AddPage(memoryPage, "Memory")
+
+        historyPage = wx.Panel(self.modulesNotebook)
+        historyPageSizer = wx.BoxSizer(wx.VERTICAL)
+        self.historyDisplay = BreakHistoryListCtrl(historyPage, console=self)
+        self.historyDisplay.SetFont(fontCourier)
+        historyPageSizer.Add(self.historyDisplay, 1, wx.EXPAND | wx.ALL, 3)
+        historyPage.SetSizer(historyPageSizer)
+        self.modulesNotebook.AddPage(historyPage, "History")
 
         self.modulesNotebook.SetMinSize(minRow)
         modulesSizer.Add(self.modulesNotebook, 1, wx.EXPAND | wx.ALL, 5)
@@ -666,8 +689,8 @@ class ConsolePanel(wx.Panel):
         if values is None:
             return
 
-        slot, bpType, size, addr = values
-        self.SendCommand(CMD_SET_BREAKPOINT, f"{slot}|{addr:#X}|{bpType}|{size}")
+        slot, bpType, size, addr, hits = values
+        self.SendCommand(CMD_SET_BREAKPOINT, f"{slot}|{addr:#X}|{bpType}|{size}" + (f"|{hits}" if hits > 1 else ""))
 
     def OnRunUntilAccel(self, event):
         row = self.disassemblyConsole.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
@@ -738,6 +761,42 @@ class ConsolePanel(wx.Panel):
 
         # The thread is halted where the trace ended, as after a step.
         self.HandleExecution(f"Trace halted at {trace['halt']:#x} tid {trace['tid']}")
+
+    def PromptMemorySearch(self, start=None, size=None):
+        """Search memory for a pattern (capemon's MS); the matches open in a results list."""
+        dlg = SearchMemoryDialog(
+            self, f"{start:#x}" if start is not None else "", f"{size:#x}" if size is not None else ""
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+
+            values = dlg.GetValues()
+        finally:
+            dlg.Destroy()
+
+        if values is None:
+            return
+
+        pattern, start, size = values
+        self.lastSearchPattern = pattern
+        where = f"{size:#x} bytes at {start:#x}" if size else "all readable memory"
+        self.AppendConsole(f"Searching {where} for {pattern}...")
+        self.SendCommand(CMD_MEMORY_SEARCH, f"{start:#x}|{size:#x}|{pattern}", tag=self.NextTag(TAG_SEARCH))
+
+    def HandleMemorySearch(self, payload):
+        reply = ParseMemorySearch(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Search failed: {reply['error']}")
+            return
+
+        self.AppendConsole(f"Search found {reply['count']} match{'es' if reply['count'] != 1 else ''}"
+                           + (" (stopped at the limit)" if reply["truncated"] else ""))
+        if not self.searchResultsDlg:
+            self.searchResultsDlg = SearchResultsDialog(self)
+        self.searchResultsDlg.SetResults(self.lastSearchPattern, reply["addresses"], reply["truncated"])
+        self.searchResultsDlg.Show()
+        self.searchResultsDlg.Raise()
 
     def ShowMemoryMap(self):
         """Open the memory map, or bring the open one forward with the current map."""
@@ -1239,6 +1298,7 @@ class ConsolePanel(wx.Panel):
             CMD_PATCH_BYTES: self.HandlePatchBytes,
             CMD_TRACE: self.HandleTrace,
             CMD_DUMP_REGION: self.HandleDumpRegion,
+            CMD_MEMORY_SEARCH: self.HandleMemorySearch,
         }
 
         if command in CMD_CONSOLE:
@@ -1791,12 +1851,14 @@ class ConsolePanel(wx.Panel):
         for bp in payload.split("|"):
             # str.split never raises, so the old `except ValueError` here was dead and a
             # short entry reached UpdateData, where unpacking it killed the whole handler.
-            # Entries are "dr,address,type,size"; older monitors sent only the first two.
+            # Entries are "dr,address,type,size,skip"; older monitors sent four fields, or two.
             parts = [part.strip() for part in bp.split(",")]
             if len(parts) == 2:
                 parts += ["x", "1"]
+            if len(parts) == 4:
+                parts.append("0")
 
-            if len(parts) != 4:
+            if len(parts) != 5:
                 log.warning("[DEBUG CONSOLE] Skipping malformed breakpoint entry: %r", bp)
                 continue
 
@@ -2751,6 +2813,7 @@ class ConsolePanel(wx.Panel):
             # returns before reaching it and HandlePageMap would then window on a stale anchor.
             self.viewAnchor = cip
             self.AppendConsole(payload)
+            self.historyDisplay.AddStop(cip, self.NearestSymbol(cip) or self.ModuleNameFor(cip), ParseBreakTid(payload), BreakEvent(payload))
             if not self.IsAddressKnown(cip):
                 self.RefreshPageMap()
                 self.RefreshModuleList()

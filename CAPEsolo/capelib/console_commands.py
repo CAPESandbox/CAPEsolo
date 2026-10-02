@@ -62,7 +62,7 @@ COMMANDS = (
     Command(CMD_STEP_OUT, ("ou", "stepout", "finish"), "ou", "Run to the return of this function"),
     Command(CMD_CONTINUE, ("ct", "continue", "go", "g"), "ct", "Continue execution"),
     Command(CMD_RUN_UNTIL, ("ru", "rununtil", "until"), "ru <address>", "Run until an address"),
-    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3|sw]", "Set a breakpoint (bp <address> sw: software)"),
+    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3|sw] [hits=N]", "Set a breakpoint (bp <address> sw: software)"),
     Command(CMD_DELETE_BREAKPOINT, ("db", "bd", "delete"), "db <0-3> | db sw <address>", "Delete a breakpoint by register or address"),
     Command(CMD_BREAKPOINT_LIST, ("lb", "bl", "breakpoints"), "lb", "List breakpoints"),
     Command(CMD_MEM_DUMP, ("md", "dump", "d"), "md <address> [size]", "Dump memory"),
@@ -97,6 +97,34 @@ def _Address(token: str, resolve) -> int | None:
     if addr is None and resolve is not None:
         addr = resolve(token)
     return addr
+
+
+def SearchPatternHex(text: str, kind: str) -> str | None:
+    """A search pattern as capemon's MS takes it: hex byte pairs, "??" for any byte.
+
+    kind is "hex" (spaces allowed, ? or ?? wildcards), "ascii" or "utf16" (UTF-16LE, as
+    Windows stores wide strings). None if the text is empty or not valid hex.
+    """
+    if not text:
+        return None
+    if kind == "ascii":
+        return text.encode("latin-1", errors="replace").hex().upper()
+    if kind == "utf16":
+        return text.encode("utf-16-le").hex().upper()
+
+    tokens = text.replace(",", " ").split()
+    if len(tokens) == 1 and len(tokens[0]) > 2:
+        tokens = [tokens[0][i:i + 2] for i in range(0, len(tokens[0]), 2)]
+    out = []
+    for token in tokens:
+        token = token.upper()
+        if token in ("?", "??"):
+            out.append("??")
+        elif len(token) == 2 and all(c in "0123456789ABCDEF" for c in token):
+            out.append(token)
+        else:
+            return None
+    return "".join(out)
 
 
 def HelpText() -> str:
@@ -243,7 +271,22 @@ def _Payload(command: Command, args: list[str], resolve=None):
 
 
 def _BreakpointPayload(args: list[str], resolve=None):
-    """`bp <address> [type] [size] [slot]` as capemon's slot|address|type|size."""
+    """`bp <address> [type] [size] [slot] [hits=N]` as capemon's slot|address|type|size[|hits].
+
+    hits=N breaks on the Nth hit instead of the first; it may appear anywhere after the address.
+    """
+    hits = 1
+    rest = []
+    for arg in args:
+        if arg.lower().startswith("hits="):
+            value = arg[5:]
+            if not value.isdigit() or int(value) < 1:
+                return None, f"'{arg}' is not a hit count; use hits=N with N of 1 or more."
+            hits = int(value)
+        else:
+            rest.append(arg)
+    args = rest
+
     if not args or len(args) > 4:
         return None, "Expected an address, and optionally a type, size and slot."
 
@@ -283,4 +326,4 @@ def _BreakpointPayload(args: list[str], resolve=None):
 
     # Uppercase 0X, matching what PromptBreakpoint already sends: capemon parses both, and
     # one wire format for breakpoints is one thing to check when a payload looks wrong.
-    return f"{slot}|{addr:#X}|{bpType}|{size}", None
+    return f"{slot}|{addr:#X}|{bpType}|{size}" + (f"|{hits}" if hits > 1 else ""), None

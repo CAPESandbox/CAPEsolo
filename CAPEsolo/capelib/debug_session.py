@@ -279,11 +279,11 @@ def ParseThreads(payload: str) -> list[dict[str, Any]]:
 
 
 def ParseBreakpoints(payload: str) -> list[dict[str, str]]:
-    """Parse breakpoint entries of the form 'dr,address,type,size' joined by '|'.
+    """Parse breakpoint entries of the form 'dr,address,type,size,skip' joined by '|'.
 
-    Monitors predating data breakpoints sent only 'dr,address'; those are execute
-    breakpoints one byte wide. Without the four-field form this returned an empty list
-    for every breakpoint, silently.
+    skip is how many more hits the breakpoint passes over before it breaks. Monitors
+    predating hit counts send four fields, and those predating data breakpoints only
+    'dr,address'; the missing fields are an execute breakpoint, one byte, no skip.
     """
     if "No" in payload:
         return []
@@ -293,13 +293,34 @@ def ParseBreakpoints(payload: str) -> list[dict[str, str]]:
         parts = [part.strip() for part in bp.split(",")]
         if len(parts) == 2:
             parts += ["x", "1"]
+        if len(parts) == 4:
+            parts.append("0")
 
-        if len(parts) != 4:
+        if len(parts) != 5:
             continue
 
-        breakpoints.append({"dr": parts[0], "address": parts[1], "type": parts[2], "size": parts[3]})
+        breakpoints.append({"dr": parts[0], "address": parts[1], "type": parts[2], "size": parts[3], "skip": parts[4]})
 
     return breakpoints
+
+
+def ParseMemorySearch(payload: str) -> dict[str, Any]:
+    """An MS reply: `<tag>|<count>|<more>|<addr>,<addr>,...` or `<tag>|Failed ...`."""
+    parts = payload.strip().split("|")
+    if len(parts) >= 2 and parts[1].startswith("Failed"):
+        return {"ok": False, "error": "|".join(parts[1:]).strip()}
+    if len(parts) != 4:
+        return {"ok": False, "error": f"Unexpected search reply: {payload[:120]}"}
+
+    try:
+        return {
+            "ok": True,
+            "count": int(parts[1]),
+            "truncated": parts[2] == "1",
+            "addresses": [int(addr, 16) for addr in parts[3].split(",") if addr],
+        }
+    except ValueError:
+        return {"ok": False, "error": f"Unexpected search reply: {payload[:120]}"}
 
 
 def ParseCallStack(payload: str) -> list[dict[str, str]]:

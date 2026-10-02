@@ -128,6 +128,26 @@ export name works when only one module exports it. Exports load in the backgroun
 first break, so a module not read yet is not found. Use a hardware breakpoint for an API:
 software breakpoints are refused in system DLLs.
 
+### Hit counts
+
+**Break on hit** in the Set Breakpoint dialog (or `hits=N` on `bp`) passes over the first N-1
+hits and breaks on the Nth, then on every hit after. The Breakpoints pane's **Skip** column
+counts down the hits still to pass over. Works for hardware and software breakpoints.
+
+### History
+
+The **History** tab (beside Modules and Memory) lists every stop of the session, newest first:
+address, nearest symbol or module, thread and what stopped it (breakpoint, step, trace).
+Double-click a row to go to its address.
+
+### Search Memory
+
+**Search Memory...** (beside Dump Memory to File, or **Search This Region...** in the Memory Map)
+finds a pattern in the target: hex bytes with `??` for any byte, ASCII, or UTF-16 text. With no
+start address it searches all readable memory, skipping the monitor's own image. The matches
+(at most 1000) open in a list with their protection and module; double-click dumps one in the
+Memory Dump pane, and right-click offers Disassemble and Copy Address.
+
 ### Memory Map
 
 The **Memory** tab (beside Modules) logs regions that appear, change protection, grow or are
