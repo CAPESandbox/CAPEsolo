@@ -120,6 +120,20 @@ def test_breakpoint_rejects_bad_type_size_and_slot():
     assert "slot" in Err("bp 401000 w 4 9")
 
 
+def test_software_breakpoint_short_and_full_forms():
+    assert Ok("bp 401000 sw") == ("BP", "sw|0X401000|x|1")
+    assert Ok("bp 401000 x 1 sw") == ("BP", "sw|0X401000|x|1")
+
+
+def test_software_breakpoint_rejects_a_watch():
+    assert "execute only" in Err("bp 401000 w 4 sw")
+
+
+def test_delete_software_breakpoint_by_address():
+    assert Ok("db sw 401000") == ("DB", "sw|0X401000")
+    assert "hex address" in Err("db sw xyz")
+
+
 def test_delete_breakpoint_takes_a_debug_register():
     assert Ok("db 2") == ("DB", "2")
     assert "0 to 3" in Err("db 4")

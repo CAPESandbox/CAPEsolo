@@ -600,10 +600,12 @@ class CAPEDetectedThreat(Signature):
 
     def run(self):
         if self.results.get("detections"):
-            self.description = "CAPE detected the %s malware" % ", ".join(block["family"] for block in self.results["detections"])
-            for block in self.results["detections"]:
+            # CAPEsolo's detections are family names; CAPEv2's are {family, details} records.
+            blocks = [block if isinstance(block, dict) else {"family": block} for block in self.results["detections"]]
+            self.description = "CAPE detected the %s malware" % ", ".join(block["family"] for block in blocks)
+            for block in blocks:
                 # ToDo make data more beautiful
-                self.data.append({block["family"]: block["details"]})
+                self.data.append({block["family"]: block.get("details", "")})
             return True
 
         return False

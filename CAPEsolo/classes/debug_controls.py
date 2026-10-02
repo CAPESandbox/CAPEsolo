@@ -461,9 +461,9 @@ class DisassemblyListCtrl(wx.ListCtrl):
         miRunUntil = menu.Append(wx.ID_ANY, "Run Until")
         menu.AppendSeparator()
         bpMenu = wx.Menu()
-        for slot in ("Next", "0", "1", "2", "3"):
+        for label, slot in (("Next", "next"), ("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("Software", "sw")):
             bpId = wx.NewIdRef()
-            bpMenu.Append(bpId, slot)
+            bpMenu.Append(bpId, label)
             self.Bind(wx.EVT_MENU, lambda e, s=slot: self.OnSetBreakpoint(row, s), id=bpId)
 
         menu.AppendSubMenu(bpMenu, "Set Breakpoint")
@@ -1802,6 +1802,9 @@ class BreakpointsListCtrl(wx.ListCtrl):
 
     def OnDeleteBreakpoint(self, row):
         index = self.GetItemText(row, 0).strip()
+        # A software breakpoint has no register, so capemon deletes it by address.
+        if index == "sw":
+            index = f"sw|0X{self.GetItemText(row, 1).strip()}"
         self.parent.SendCommand(CMD_DELETE_BREAKPOINT, index)
 
     def OnFollowBreakpoint(self, row):
@@ -2109,7 +2112,7 @@ class BreakpointDialog(ui.Dialog):
         grid.Add(self.sizeCtrl, flag=wx.EXPAND)
 
         grid.Add(wx.StaticText(self, label="Slot:"), flag=wx.ALIGN_CENTER_VERTICAL)
-        self.slotCtrl = ui.Picker(self, choices=["next", "0", "1", "2", "3"])
+        self.slotCtrl = ui.Picker(self, choices=["next", "0", "1", "2", "3", "sw"])
         self.slotCtrl.SetSelection(0)
         grid.Add(self.slotCtrl, flag=wx.EXPAND)
 
@@ -2170,7 +2173,12 @@ class BreakpointDialog(ui.Dialog):
             )
             return None
 
-        return self.slotCtrl.GetStringSelection(), bpType, size, address
+        slot = self.slotCtrl.GetStringSelection()
+        if slot == "sw" and bpType != BP_EXEC:
+            ui.message("A software breakpoint is execute only.", "Set Breakpoint", wx.OK | wx.ICON_ERROR)
+            return None
+
+        return slot, bpType, size, address
 
 
 class CallStackListCtrl(wx.ListCtrl):
