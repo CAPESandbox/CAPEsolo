@@ -11,9 +11,11 @@ import re
 import wx
 
 from CAPEsolo.capelib.cfg import EDGE_FALL, EDGE_TAKEN, BuildCfg, LayoutCfg
+from CAPEsolo.capelib.cmdconsts import CMD_DELETE_BREAKPOINT, CMD_MEM_DUMP, CMD_RUN_UNTIL, CMD_SET_BREAKPOINT
 from CAPEsolo.capelib.flow_arrows import JumpTarget
 
 from . import ui_kit as ui
+from .debug_controls import TAG_DUMP, SetClipboard
 from .theme import (
     ACCENT_CALL,
     ACCENT_ERROR,
@@ -224,6 +226,7 @@ class GraphCanvas(wx.ScrolledWindow):
         self.Bind(wx.EVT_MOTION, self.OnMotion)
         self.Bind(wx.EVT_LEFT_DCLICK, self.OnDoubleClick)
         self.Bind(wx.EVT_MOUSEWHEEL, self.OnWheel)
+        self.Bind(wx.EVT_CONTEXT_MENU, self.OnContextMenu)
 
     # --- geometry --------------------------------------------------------------------------
     def Lines(self, node) -> list[str]:
@@ -354,6 +357,76 @@ class GraphCanvas(wx.ScrolledWindow):
         if callee is not None:
             self.window.Start(callee)
 
+    def OnContextMenu(self, event):
+        """The disassembly's actions, by address: the graph has no rows to hand them."""
+        node, addr = self.HitTest(self.ScreenToClient(event.GetPosition()))
+        if addr is None:
+            return
+        self.selected = addr
+        self.Refresh()
+
+        console = self.console
+        disasm = console.disassemblyConsole
+        ins = next(i for i in self.cfg.blocks[node].instructions if i.address == addr)
+        # The graph's text is the decoder's, literals intact, so the operand parses directly.
+        operand = disasm.ParseOperandAddress(ins.text, addr + ins.size)
+
+        menu = wx.Menu()
+        bpMenu = wx.Menu()
+        for label, slot in (("Next", "next"), ("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("Software", "sw")):
+            item = bpMenu.Append(wx.ID_ANY, label)
+            self.Bind(wx.EVT_MENU, lambda e, s=slot: console.SendCommand(CMD_SET_BREAKPOINT, f"{s}|{addr:#X}"), item)
+        menu.AppendSubMenu(bpMenu, "Set Breakpoint")
+        if addr in disasm.bpAddrs:
+            item = menu.Append(wx.ID_ANY, "Delete Breakpoint")
+            self.Bind(wx.EVT_MENU, lambda e: self.DeleteBreakpoint(addr), item)
+        item = menu.Append(wx.ID_ANY, "Run Until")
+        self.Bind(wx.EVT_MENU, lambda e: console.SendCommand(CMD_RUN_UNTIL, f"{addr:#X}"), item)
+
+        menu.AppendSeparator()
+        item = menu.Append(wx.ID_ANY, "Rename Address...")
+        self.Bind(wx.EVT_MENU, lambda e: self.Rename(addr), item)
+        if operand is not None:
+            item = menu.Append(wx.ID_ANY, "Rename Operand Target...")
+            self.Bind(wx.EVT_MENU, lambda e: self.Rename(operand), item)
+            item = menu.Append(wx.ID_ANY, "Dump Address")
+            self.Bind(wx.EVT_MENU, lambda e: console.SendCommand(CMD_MEM_DUMP, f"{operand:#x}", tag=console.NextTag(TAG_DUMP)), item)
+            item = menu.Append(wx.ID_ANY, "Copy Operand Address")
+            self.Bind(wx.EVT_MENU, lambda e: SetClipboard(f"{operand:#x}"), item)
+        item = menu.Append(wx.ID_ANY, "Copy Address")
+        self.Bind(wx.EVT_MENU, lambda e: SetClipboard(f"{addr:#x}"), item)
+
+        menu.AppendSeparator()
+        item = menu.Append(wx.ID_ANY, "Graph From Here")
+        self.Bind(wx.EVT_MENU, lambda e: self.window.Start(addr), item)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def Rename(self, addr):
+        current = self.console.userNames.get(addr, "")
+        dlg = wx.TextEntryDialog(self, f"Name for {addr:#x} (blank to clear):", "Rename Address", current)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            name = dlg.GetValue()
+        finally:
+            dlg.Destroy()
+        # RenameAddress tells the graph to rename and lay out again.
+        self.console.RenameAddress(addr, name)
+
+    def DeleteBreakpoint(self, addr):
+        """Delete by the slot the Breakpoints pane lists for this address."""
+        pane = self.console.breakpointsDisplay
+        for row in range(pane.GetItemCount()):
+            try:
+                listed = int(pane.GetItemText(row, 1), 16)
+            except ValueError:
+                continue
+            if listed == addr:
+                pane.OnDeleteBreakpoint(row)
+                return
+        self.console.AppendConsole(f"No listed breakpoint at {addr:#x}.")
+
     def OnWheel(self, event):
         if event.ControlDown():
             self.Zoom(1.15 if event.GetWheelRotation() > 0 else 1 / 1.15)
@@ -370,14 +443,20 @@ class GraphCanvas(wx.ScrolledWindow):
             return
         dc.SetUserScale(self.scale, self.scale)
         dc.SetFont(FONT_CODE)
-        self.DrawEdges(dc)
+        # The trace overlay applies only when the last trace ran through this function;
+        # otherwise every block would read as unreached.
+        traced = self.console.disassemblyConsole.traceAddrs
+        reached = {start for start, block in self.cfg.blocks.items()
+                   if any(ins.address in traced for ins in block.instructions)} if traced else set()
+        self.DrawEdges(dc, bool(reached))
         cipBlock = self.BlockOf(self.console.cip)
         for node in self.layout.nodes:
-            self.DrawBlock(dc, node, node == cipBlock)
+            self.DrawBlock(dc, node, node == cipBlock, bool(reached) and node not in reached)
 
-    def DrawEdges(self, dc):
+    def DrawEdges(self, dc, tracing: bool):
         nodes = self.layout.nodes
         colours = {EDGE_TAKEN: ACCENT_JUMP, EDGE_FALL: FG_RED_ALERT}
+        steps = self.console.disassemblyConsole.traceTransitions
         for src, dst, kind, back in self.layout.edges:
             sx0, sy0, sw, sh = nodes[src]
             dx0, dy0, dw, dh = nodes[dst]
@@ -391,12 +470,16 @@ class GraphCanvas(wx.ScrolledWindow):
             else:
                 mid = sy + V_GAP / 2
                 points = [(sx, sy), (sx, mid), (dx, mid), (dx, dy)]
-            dc.SetPen(wx.Pen(colours.get(kind, ACCENT_CALL), 2))
+            # Under a trace, an edge it took is thick and the rest thin: the path at a glance.
+            width = 2
+            if tracing:
+                width = 4 if (block.instructions[-1].address, dst) in steps else 1
+            dc.SetPen(wx.Pen(colours.get(kind, ACCENT_CALL), width))
             dc.DrawLines([wx.Point(int(px), int(py)) for px, py in points])
             dc.SetBrush(wx.Brush(colours.get(kind, ACCENT_CALL)))
             dc.DrawPolygon([wx.Point(int(dx), int(dy)), wx.Point(int(dx - 5), int(dy - 8)), wx.Point(int(dx + 5), int(dy - 8))])
 
-    def DrawBlock(self, dc, node, isCipBlock: bool):
+    def DrawBlock(self, dc, node, isCipBlock: bool, unreached: bool = False):
         x, y, w, h = self.layout.nodes[node]
         x, y = MARGIN + x, MARGIN + y
         block = self.cfg.blocks.get(node)
@@ -434,7 +517,11 @@ class GraphCanvas(wx.ScrolledWindow):
                 dc.SetBrush(wx.Brush(fill))
                 dc.DrawRectangle(int(x + 2), int(ty), int(w - 4), self.lineH)
             mnemonic = ins.text.split()[0].upper() if ins.text else ""
-            dc.SetTextForeground(ACCENT_CALL if mnemonic == "CALL" else ACCENT_JUMP if mnemonic.startswith("J") else FG_PRIMARY)
+            if unreached:
+                # Never executed by the last trace.
+                dc.SetTextForeground(FG_SECONDARY)
+            else:
+                dc.SetTextForeground(ACCENT_CALL if mnemonic == "CALL" else ACCENT_JUMP if mnemonic.startswith("J") else FG_PRIMARY)
             dc.DrawText(lines[row + i], int(x + PAD), int(ty))
         if block.end in ("indirect", "missing", "limit", "stop"):
             dc.SetTextForeground(FG_SECONDARY)

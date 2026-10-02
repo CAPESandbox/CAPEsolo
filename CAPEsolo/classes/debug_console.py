@@ -2503,6 +2503,8 @@ class ConsolePanel(wx.Panel):
         # RenderDisassembly only rewrites operands, so naming the address the view is parked
         # on would otherwise leave the heading showing the old name until the next move.
         self.UpdateViewLabel()
+        if self.cfgWindow:
+            self.cfgWindow.NamesChanged()
         return True
 
     def ExportNames(self, path) -> None:

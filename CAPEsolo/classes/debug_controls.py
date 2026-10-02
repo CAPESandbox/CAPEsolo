@@ -160,8 +160,10 @@ class DisassemblyListCtrl(wx.ListCtrl):
         # Rows are rebuilt on every break, which drops their colours, so breakpoint addresses
         # are kept here and re-applied. cipRow is the one row holding the CIP highlight.
         self.bpAddrs: set[int] = set()
-        # Instructions the last trace executed, tinted until the next trace or a clear.
+        # Instructions the last trace executed, tinted until the next trace or a clear, and
+        # each step it took (address -> next address) - which branch a block left by.
         self.traceAddrs: set[int] = set()
+        self.traceTransitions: set[tuple[int, int]] = set()
         self.cipRow = None
         # The one row currently carrying a call argument comment, so it can be cleared
         # when CIP moves rather than leaving a stale annotation behind.
@@ -280,13 +282,17 @@ class DisassemblyListCtrl(wx.ListCtrl):
     def SetTraceAddrs(self, addrs):
         """Tint the instructions a trace executed. Rows before an incremental rebuild's first
         change are kept, not reinserted, so every current row is repainted here."""
-        self.traceAddrs = set(addrs)
+        path = list(addrs)
+        self.traceAddrs = set(path)
+        self.traceTransitions = set(zip(path, path[1:]))
         with self.cacheLock:
             insts = list(self.decodeCache)
         for row, inst in enumerate(insts[: self.GetItemCount()]):
             if row != self.cipRow:
                 self.SetItemBackgroundColour(row, self.RowBackground(inst.address))
         self.Refresh()
+        if self.parent.cfgWindow:
+            self.parent.cfgWindow.OnBreak()
 
     def BaseComment(self, row: int) -> str:
         """The comment a row carries of its own accord: the name of the address it is at."""

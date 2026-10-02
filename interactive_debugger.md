@@ -138,7 +138,11 @@ block holding CIP has a green border; CIP, breakpoint and traced instructions ar
 in the disassembly and follow each stop.
 
 Click an instruction to show it in the disassembly; double-click a jump to centre on its
-target, or a direct call to graph the callee (**Back** returns). Ctrl+wheel or the zoom buttons
+target, or a direct call to graph the callee (**Back** returns). Right-click an instruction for
+Set/Delete Breakpoint, Run Until, Rename Address / Operand Target, Dump Address, Copy Address
+and Graph From Here. After a **Trace...** through the function, the edges it took are drawn
+thick and the rest thin, and blocks it never reached are greyed out - the path at a glance;
+Clear Trace Highlight (disassembly menu) removes it. Ctrl+wheel or the zoom buttons
 zoom, **Fit** shows the whole graph, and dragging empty space pans. The code is read through
 the debugger as needed; **Refresh** reads it again after it has been unpacked or patched.
 Calls fall through; a path ends at a return, an indirect jump (a switch table, a jump through a
