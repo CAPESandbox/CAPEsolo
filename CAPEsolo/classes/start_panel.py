@@ -336,6 +336,7 @@ class StartPanel(wx.Panel):
         self.parent.targetFile = self.targetFile
         self.idbg = False
         self.dbgConsole = None
+        self.idleDbgConsole = None
         self.processTreeWindow = None
         self.downloadBroker = None
         self._downloading = False
@@ -720,6 +721,12 @@ class StartPanel(wx.Panel):
 
         self.idbgCheckbox = ui.Check(self.debuggerPane, label="Interactive Debugger")
         self.idbgCheckbox.Bind(wx.EVT_CHECKBOX, self.OnIdbgChecked)
+        self.showDebuggerBtn = ui.Button(self.debuggerPane, label="Show Debugger")
+        self.showDebuggerBtn.SetToolTip("Show the interactive debugger window")
+        self.showDebuggerBtn.Bind(wx.EVT_BUTTON, self.OnShowDebugger)
+        hboxIdbg = wx.BoxSizer(wx.HORIZONTAL)
+        hboxIdbg.Add(self.idbgCheckbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, gapM)
+        hboxIdbg.Add(self.showDebuggerBtn, 0, wx.ALIGN_CENTER_VERTICAL)
 
         self.yarascanDisable = ui.Check(self.debuggerPane, label="Disable Monitor Yarascan")
 
@@ -731,7 +738,7 @@ class StartPanel(wx.Panel):
         self.flexDebuggerSizer.Add(hCountDepth, 0, wx.ALIGN_CENTER_VERTICAL)
         self.flexDebuggerSizer.Add(self.baseAllocCheckbox, 0, wx.ALIGN_CENTER_VERTICAL)
         self.flexDebuggerSizer.Add(self.yarascanDisable, 0, wx.ALIGN_CENTER_VERTICAL)
-        self.flexDebuggerSizer.Add(self.idbgCheckbox, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.flexDebuggerSizer.Add(hboxIdbg, 0, wx.ALIGN_CENTER_VERTICAL)
 
         debuggerVert = wx.BoxSizer(wx.VERTICAL)
         debuggerVert.Add(self.flexDebuggerSizer, 0, wx.BOTTOM, gapM)
@@ -1680,21 +1687,12 @@ class StartPanel(wx.Panel):
             self.analyzer = Analyzer()
             self.analyzer.prepare()
             mainFrame = self.GetMainFrame()
-            width, height = mainFrame.GetSize()
-            position = mainFrame.GetPosition()
-            # The console wants extra horizontal room for its side-by-side disassembly,
-            # registers, memory and stack panes, but doubling the main frame's width
-            # unconditionally could - and did - exceed the screen (e.g. a 1117px-wide main
-            # frame doubles to 2234px, wider than a 1920px display), positioned starting at
-            # the main frame's own on-screen origin. Clamp to what is actually left of the
-            # screen from that origin.
-            screenWidth, screenHeight = wx.DisplaySize()
-            size = wx.Size(
-                min(int(width * 2), screenWidth - position.x),
-                min(height, screenHeight - position.y),
-            )
             if self.idbg:
-                self.dbgConsole = DebugConsole(self, "Debug Console", position, size)
+                # The session gets its own window; an idle one left open would be a second
+                # "Debug Console" connected to nothing.
+                if self.idleDbgConsole and self.idleDbgConsole.frame:
+                    self.idleDbgConsole.frame.Close()
+                self.dbgConsole = DebugConsole(self, "Debug Console", *self.DebugConsoleGeometry())
                 self.dbgConsole.launch()
             mainFrame.statusBar.StartCountdown(self.countdown)
             self.StartAnalyzerThread(self.analyzer)
@@ -2280,6 +2278,40 @@ class StartPanel(wx.Panel):
 
     def OnIdbgChecked(self, event):
         self.idbg = self.idbgCheckbox.GetValue()
+
+    def DebugConsoleGeometry(self):
+        """(position, size) for a debug console window."""
+        mainFrame = self.GetMainFrame()
+        width, height = mainFrame.GetSize()
+        position = mainFrame.GetPosition()
+        # The console wants extra horizontal room for its side-by-side disassembly,
+        # registers, memory and stack panes, but doubling the main frame's width
+        # unconditionally could - and did - exceed the screen (e.g. a 1117px-wide main
+        # frame doubles to 2234px, wider than a 1920px display), positioned starting at
+        # the main frame's own on-screen origin. Clamp to what is actually left of the
+        # screen from that origin.
+        screenWidth, screenHeight = wx.DisplaySize()
+        size = wx.Size(
+            min(int(width * 2), screenWidth - position.x),
+            min(height, screenHeight - position.y),
+        )
+        return position, size
+
+    def OnShowDebugger(self, event):
+        # The running session's window, which stays hidden until the first break; with no
+        # session (or once its window was closed, which ends it) an idle one, not connected
+        # to anything, kept apart so the end-of-run shutdown does not close it.
+        frame = self.dbgConsole.frame if self.dbgConsole else None
+        if not frame:
+            frame = self.idleDbgConsole.frame if self.idleDbgConsole else None
+        if not frame:
+            self.idleDbgConsole = DebugConsole(self, "Debug Console", *self.DebugConsoleGeometry())
+            self.idleDbgConsole.OpenConsole()
+            frame = self.idleDbgConsole.frame
+
+        frame.Iconize(False)
+        frame.Show()
+        frame.Raise()
 
     def OnUpdate(self, event):
         userRoot = user_config_path().parent
