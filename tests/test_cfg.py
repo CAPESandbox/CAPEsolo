@@ -4,6 +4,7 @@
 """
 
 from CAPEsolo.capelib.cfg import (
+    EDGE_CASE,
     EDGE_FALL,
     EDGE_JUMP,
     EDGE_NEXT,
@@ -117,3 +118,35 @@ def test_static_slot_address_reads_absolute_and_rip_relative_slots():
     assert StaticSlotAddress("[0x405000]", 0x401006) == 0x405000
     assert StaticSlotAddress("[RIP+0x3af9]", 0x140001006) == 0x140004AFF
     assert StaticSlotAddress("[RAX+0x8]", 0x1000) is None
+
+
+def test_x86_absolute_switch_table_becomes_case_edges():
+    # cmp eax,2 / ja 0x401010 / jmp dword [eax*4+0x401020]; default and three cases are rets
+    code = bytes.fromhex("83F802" "770B" "FF248520104000" "90909090" "C3" "C3" "C3" "C3")
+    table = bytes.fromhex("11104000" "12104000" "13104000")
+    cfg = BuildCfg(0x401000, Reader({0x401000: code, 0x401020: table}), 32)
+    assert cfg.blocks[0x401005].edges == [(0x401011, EDGE_CASE), (0x401012, EDGE_CASE), (0x401013, EDGE_CASE)]
+    assert cfg.blocks[0x401000].edges == [(0x401010, EDGE_TAKEN), (0x401005, EDGE_FALL)]
+
+
+def test_x64_msvc_rva_switch_table_becomes_case_edges():
+    # cmp ecx,2 / ja default / lea rdx,[image base] / mov ecx,[rdx+rcx*4+0x2000] / add rcx,rdx / jmp rcx
+    code = bytes.fromhex("83F902" "7713" "488D15F4EFFFFF" "8B8C8A00200000" "4801D1" "FFE1" "C3" "C3" "C3" "C3")
+    table = bytes.fromhex("19100000" "1A100000" "1B100000")
+    cfg = BuildCfg(0x140001000, Reader({0x140001000: code, 0x140002000: table}), 64)
+    assert cfg.blocks[0x140001005].edges == [
+        (0x140001019, EDGE_CASE), (0x14000101A, EDGE_CASE), (0x14000101B, EDGE_CASE)]
+
+
+def test_switch_without_a_bounds_check_stays_indirect():
+    # lea rdx,[...] / mov ecx,[rdx+rcx*4+0x2000] / add rcx,rdx / jmp rcx - no cmp/ja before it
+    code = bytes.fromhex("488D15F9EFFFFF" "8B8C8A00200000" "4801D1" "FFE1")
+    cfg = BuildCfg(0x140001000, Reader({0x140001000: code}), 64)
+    assert cfg.blocks[0x140001000].end == END_INDIRECT
+
+
+def test_switch_table_on_an_unread_page_is_fetched():
+    code = bytes.fromhex("83F902" "7713" "488D15F4EFFFFF" "8B8C8A00200000" "4801D1" "FFE1" "C3" "C3" "C3" "C3")
+    cfg = BuildCfg(0x140001000, Reader({0x140001000: code}), 64)
+    assert 0x140002000 in cfg.missing
+    assert cfg.blocks[0x140001005].end == END_INDIRECT

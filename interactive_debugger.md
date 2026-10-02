@@ -131,7 +131,8 @@ software breakpoints are refused in system DLLs.
 ### Graph View
 
 Right-click the disassembly and choose **Graph From Here** (the selected row is taken as the
-function's entry - there are no symbols to find it) or, on a direct CALL, **Graph Call Target**.
+function's entry - there are no symbols to find it), or press **G** on the selected row (Space
+stays Patch), or, on a CALL, **Graph Call Target**.
 The graph opens in its own window: basic blocks top to bottom, conditional jumps green when
 taken and red when not, unconditional flow blue, loops routed up the right-hand side. The
 block holding CIP has a green border; CIP, breakpoint and traced instructions are coloured as
@@ -143,10 +144,14 @@ Set/Delete Breakpoint, Run Until, Rename Address / Operand Target, Dump Address,
 and Graph From Here. After a **Trace...** through the function, the edges it took are drawn
 thick and the rest thin, and blocks it never reached are greyed out - the path at a glance;
 Clear Trace Highlight (disassembly menu) removes it. Ctrl+wheel or the zoom buttons
-zoom, **Fit** shows the whole graph, and dragging empty space pans. The code is read through
+zoom, **Fit** shows the whole graph, dragging empty space pans, and **Save PNG...** writes the
+whole graph, overlays included, to an image (scaled down past 8000 pixels a side). The code is read through
 the debugger as needed; **Refresh** reads it again after it has been unpacked or patched.
-Calls fall through; a path ends at a return, an indirect jump (a switch table, a jump through a
-register) or unreadable memory, and the graph stops at 500 blocks.
+Calls fall through; a path ends at a return, an indirect jump or unreadable memory, and the
+graph stops at 500 blocks. Switch tables are followed - a case edge to each distinct target - in
+the common compiler shapes (x86 `jmp [reg*4+table]`, x64 MSVC image-base RVA tables, x64
+GCC/clang relative tables), when a bounds check before the jump gives the case count; without
+one the jump stays indirect rather than guessing the table's size.
 
 ### Hit counts
 

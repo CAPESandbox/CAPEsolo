@@ -2276,9 +2276,10 @@ if mcp:
         a known entry, not the middle of a function. Conditional and direct jumps are followed;
         calls fall through. Each block lists its successors (kind taken / fall for the two sides
         of a conditional jump, jump for an unconditional one, next for plain flow into a block
-        something else also jumps to; loop marks the edge that closes a loop), why it ends when
-        it has no successor (ret, indirect - a switch table or jump through a register - stop,
-        missing, limit), and its calls: direct targets, and indirect ones through a fixed slot
+        something else also jumps to, case for each distinct target of a switch table - followed
+        when a bounds check gives its size; loop marks the edge that closes a loop), why it ends
+        when it has no successor (ret, indirect - a jump through a register or an unbounded
+        table - stop, missing, limit), and its calls: direct targets, and indirect ones through a fixed slot
         such as the import table resolved by reading the slot. Addresses outside the graph carry
         where (module+offset). loops lists every loop's closing edge; unreadable lists addresses
         the graph could not read. At most max_blocks blocks (500 max), nearest the entry first;

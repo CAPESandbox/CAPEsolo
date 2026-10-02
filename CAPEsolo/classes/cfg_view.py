@@ -10,7 +10,7 @@ import re
 
 import wx
 
-from CAPEsolo.capelib.cfg import EDGE_FALL, EDGE_TAKEN, BuildCfg, LayoutCfg
+from CAPEsolo.capelib.cfg import EDGE_CASE, EDGE_FALL, EDGE_TAKEN, BuildCfg, LayoutCfg
 from CAPEsolo.capelib.cmdconsts import CMD_DELETE_BREAKPOINT, CMD_MEM_DUMP, CMD_RUN_UNTIL, CMD_SET_BREAKPOINT
 from CAPEsolo.capelib.flow_arrows import JumpTarget
 
@@ -72,6 +72,7 @@ class CfgWindow(wx.Frame):
             ("Zoom +", lambda e: self.canvas.Zoom(1.25)),
             ("Fit", lambda e: self.canvas.Fit()),
             ("Refresh", lambda e: self.Reload()),
+            ("Save PNG...", lambda e: self.SavePng()),
         ):
             btn = ui.Button(panel, label=label)
             btn.Bind(wx.EVT_BUTTON, handler)
@@ -167,6 +168,23 @@ class CfgWindow(wx.Frame):
         if not self.centered and cfg.entry in cfg.blocks:
             self.centered = True
             self.canvas.CenterOn(cfg.entry)
+
+    def SavePng(self):
+        if not self.canvas.layout:
+            return
+        name = f"graph_{self.entry:x}.png"
+        dlg = wx.FileDialog(self, "Save Graph", defaultFile=name, wildcard="PNG images (*.png)|*.png",
+                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            path = dlg.GetPath()
+        finally:
+            dlg.Destroy()
+        if self.canvas.SavePng(path):
+            self.console.AppendConsole(f"Graph saved to {path}")
+        else:
+            ui.message(f"Could not save {path}.", "Save Graph", wx.OK | wx.ICON_ERROR)
 
     def PageArrived(self, page: int, data: bytes | None):
         """A page the console read, or could not; rebuild if the graph was waiting for it."""
@@ -439,9 +457,29 @@ class GraphCanvas(wx.ScrolledWindow):
         self.DoPrepareDC(dc)
         dc.SetBackground(wx.Brush(BG_MAIN))
         dc.Clear()
-        if not self.layout:
-            return
-        dc.SetUserScale(self.scale, self.scale)
+        if self.layout:
+            dc.SetUserScale(self.scale, self.scale)
+            self.Draw(dc)
+
+    # A PNG past this many pixels a side is scaled down: a 500-block graph is tens of thousands
+    # of pixels tall at full size, which no viewer opens comfortably.
+    MAX_PNG_SIDE = 8000
+
+    def SavePng(self, path: str) -> bool:
+        """Render the whole graph, overlays included, to a PNG."""
+        w, h = self.TotalSize()
+        scale = min(1.0, self.MAX_PNG_SIDE / max(w, h, 1))
+        bitmap = wx.Bitmap(max(1, int(w * scale)), max(1, int(h * scale)))
+        dc = wx.MemoryDC(bitmap)
+        dc.SetBackground(wx.Brush(BG_MAIN))
+        dc.Clear()
+        dc.SetUserScale(scale, scale)
+        self.Draw(dc)
+        dc.SelectObject(wx.NullBitmap)
+        return bitmap.SaveFile(path, wx.BITMAP_TYPE_PNG)
+
+    def Draw(self, dc):
+        """Edges, then blocks, in layout coordinates - shared by the window and the PNG."""
         dc.SetFont(FONT_CODE)
         # The trace overlay applies only when the last trace ran through this function;
         # otherwise every block would read as unreached.
@@ -461,7 +499,12 @@ class GraphCanvas(wx.ScrolledWindow):
             sx0, sy0, sw, sh = nodes[src]
             dx0, dy0, dw, dh = nodes[dst]
             block = self.cfg.blocks[src]
-            share = 0.5 if len(block.edges) == 1 else (0.3 if kind == EDGE_TAKEN else 0.7)
+            if kind == EDGE_CASE:
+                # A switch: spread its cases along the bottom edge in table order.
+                cases = [target for target, k in block.edges]
+                share = (cases.index(dst) + 1) / (len(cases) + 1)
+            else:
+                share = 0.5 if len(block.edges) == 1 else (0.3 if kind == EDGE_TAKEN else 0.7)
             sx, sy = MARGIN + sx0 + sw * share, MARGIN + sy0 + sh
             dx, dy = MARGIN + dx0 + dw / 2, MARGIN + dy0
             if back:

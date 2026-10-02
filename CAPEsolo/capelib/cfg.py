@@ -33,8 +33,25 @@ MAX_INSTRUCTIONS = 10000
 MAX_INSN_LEN = 15
 
 # Edge kinds: the taken and fall-through sides of a conditional jump, an unconditional jump,
-# and plain flow into a block that starts there only because something else jumps to it.
-EDGE_TAKEN, EDGE_FALL, EDGE_JUMP, EDGE_NEXT = "taken", "fall", "jump", "next"
+# plain flow into a block that starts there only because something else jumps to it, and the
+# cases of a switch table.
+EDGE_TAKEN, EDGE_FALL, EDGE_JUMP, EDGE_NEXT, EDGE_CASE = "taken", "fall", "jump", "next", "case"
+
+# Switch tables. Only taken when a bounds check (cmp reg, N; ja/jae) gives the case count:
+# without one the table's size is unknown and reading on would invent branches.
+MAX_CASES = 512
+# How far before the jump the bounds check and the table set-up are looked for.
+SWITCH_WINDOW = 12
+# A case further than this from the jump is taken as a misread table, not code.
+MAX_CASE_DISTANCE = 0x1000000
+# x86, absolute targets: JMP DWORD [EAX*4+0x401020].
+SWITCH_ABS_RX = re.compile(r"^JMP\s+DWORD\s+\[(?:E[A-Z]{2})\*4\+(0x[0-9A-Fa-f]+)\]$", re.IGNORECASE)
+# The table read in the x64 forms: MOV ECX, [RDX+RAX*4+0x2000] / MOVSXD RAX, DWORD [RDX+RAX*4].
+TABLE_READ_RX = re.compile(
+    r"^(?P<mnemonic>MOV|MOVSXD)\s+(?P<dest>[A-Z0-9]+),\s+(?:DWORD\s+)?"
+    r"\[(?P<base>[A-Z0-9]+)\+[A-Z0-9]+\*4(?:\+(?P<disp>0x[0-9A-Fa-f]+))?\]$",
+    re.IGNORECASE,
+)
 
 # Why a block has no successor: a return, an indirect jump (a switch table, a tail call through
 # a register), an instruction that does not continue, or the graph's own limits.
@@ -92,6 +109,73 @@ def CallOperand(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _Low32(register: str) -> str:
+    """RCX -> ECX, R8 -> R8D: the register a 32-bit table read writes."""
+    register = register.upper()
+    if register.startswith("R") and register[1:].isdigit():
+        return register + "D"
+    return "E" + register[1:] if register.startswith("R") else register
+
+
+def _CaseCount(chain) -> int | None:
+    """The case count from the nearest cmp reg, N + ja/jae before the jump (newest first)."""
+    for i, (ins, _kind, _target) in enumerate(chain[:-1]):
+        mnemonic = ins.text.split()[0].upper()
+        if mnemonic not in ("JA", "JNBE", "JAE", "JNB"):
+            continue
+        cmp = chain[i + 1][0].text
+        if not cmp.upper().startswith("CMP "):
+            return None
+        try:
+            bound = int(cmp.rsplit(",", 1)[1].strip(), 0)
+        except (IndexError, ValueError):
+            return None
+        count = bound + 1 if mnemonic in ("JA", "JNBE") else bound
+        return count if 0 < count <= MAX_CASES else None
+    return None
+
+
+def _SwitchTable(ins, chain, bits) -> tuple[int, int, int, bool] | None:
+    """(table address, entry base, case count, signed entries) for a switch jump, or None.
+
+    entry base is added to each 32-bit entry: 0 for absolute x86 tables, the image base for
+    MSVC x64 RVA tables, the table itself for GCC/clang relative tables.
+    """
+    count = _CaseCount(chain)
+    if count is None:
+        return None
+
+    m = SWITCH_ABS_RX.match(ins.text)
+    if m and bits == 32:
+        return int(m.group(1), 16), 0, count, False
+
+    parts = ins.text.upper().split()
+    if bits != 64 or len(parts) != 2 or parts[0] != "JMP":
+        return None
+    target = parts[1]
+    # Newest first: add target, base / table read into target / lea base, [...].
+    base = read = None
+    for older, _kind, _t in chain:
+        text = older.text.upper()
+        if base is None:
+            if text.startswith(f"ADD {target}, "):
+                base = text.split(", ", 1)[1]
+            continue
+        if read is None:
+            m = TABLE_READ_RX.match(text)
+            if m and m.group("dest") in (target, _Low32(target)) and m.group("base") == base:
+                read = m
+            continue
+        if text.startswith(f"LEA {base}, "):
+            # The original text: StaticSlotAddress matches a lowercase 0x.
+            baseValue = StaticSlotAddress(older.text.split(", ", 1)[1], older.address + older.size)
+            if baseValue is None:
+                return None
+            disp = int(read.group("disp"), 16) if read.group("disp") else 0
+            return baseValue + disp, baseValue, count, read.group("mnemonic") == "MOVSXD"
+    return None
+
+
 def Classify(text: str) -> tuple[str, int | None]:
     """How an instruction leaves: (kind, direct target), kind one of next, jump, cond, ret,
     indirect or stop."""
@@ -118,6 +202,9 @@ def BuildCfg(entry: int, readBytes, bits: int, maxBlocks: int = MAX_BLOCKS, maxI
     mode = Decode64Bits if bits == 64 else Decode32Bits
     cfg = Cfg(entry)
     insns: dict[int, tuple[Instruction, str, int | None]] = {}
+    # Where each instruction ends -> where it starts, to walk back from a switch jump.
+    endsAt: dict[int, int] = {}
+    switches: dict[int, list[int]] = {}
     leaders = {entry}
     # Leaders in the order they were found, so a graph cut short at the block limit keeps the
     # blocks nearest the entry rather than the lowest addresses.
@@ -158,7 +245,17 @@ def BuildCfg(entry: int, readBytes, bits: int, maxBlocks: int = MAX_BLOCKS, maxI
 
             kind, target = Classify(text)
             insns[addr] = (Instruction(address, size, text, hexBytes.upper()), kind, target)
+            endsAt[addr + size] = addr
             following = addr + size
+            if kind == END_INDIRECT and text.upper().startswith("JMP"):
+                cases = _SwitchCases(insns[addr][0], insns, endsAt, readBytes, bits, cfg)
+                if cases:
+                    switches[addr] = cases
+                    insns[addr] = (insns[addr][0], "switch", None)
+                    for case in cases:
+                        Lead(case)
+                        work.append(case)
+                    break
             if kind == "next":
                 addr = following
                 continue
@@ -197,6 +294,8 @@ def BuildCfg(entry: int, readBytes, bits: int, maxBlocks: int = MAX_BLOCKS, maxI
                 block.edges.append((target, EDGE_JUMP))
             elif kind == "cond":
                 block.edges.extend(((target, EDGE_TAKEN), (following, EDGE_FALL)))
+            elif kind == "switch":
+                block.edges.extend((case, EDGE_CASE) for case in switches[addr])
             else:
                 block.end = kind
             break
@@ -205,6 +304,37 @@ def BuildCfg(entry: int, readBytes, bits: int, maxBlocks: int = MAX_BLOCKS, maxI
     targets = {target for block in cfg.blocks.values() for target, _ in block.edges}
     cfg.stubs = sorted(targets - set(cfg.blocks))
     return cfg
+
+
+def _SwitchCases(ins, insns, endsAt, readBytes, bits, cfg) -> list[int] | None:
+    """The distinct case targets of a switch jump, in table order, or None if it is not one.
+
+    A table on a page not read yet is reported in cfg.missing, so the caller fetches it and
+    the jump resolves on the next build.
+    """
+    chain, cursor = [], ins.address
+    while len(chain) < SWITCH_WINDOW and cursor in endsAt:
+        cursor = endsAt[cursor]
+        chain.append(insns[cursor])
+    table = _SwitchTable(ins, chain, bits)
+    if table is None:
+        return None
+
+    tableAddr, entryBase, count, signed = table
+    data = readBytes(tableAddr, count * 4)
+    if not data or len(data) < count * 4:
+        cfg.missing.add(tableAddr + len(data or b""))
+        return None
+
+    cases = []
+    for i in range(count):
+        entry = int.from_bytes(data[i * 4:i * 4 + 4], "little", signed=signed)
+        case = (entryBase + entry) & ((1 << bits) - 1)
+        if abs(case - ins.address) > MAX_CASE_DISTANCE:
+            return None
+        if case not in cases:
+            cases.append(case)
+    return cases
 
 
 Layout = namedtuple("Layout", ["nodes", "edges", "width", "height"])

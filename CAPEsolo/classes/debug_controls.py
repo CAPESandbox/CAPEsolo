@@ -405,13 +405,21 @@ class DisassemblyListCtrl(wx.ListCtrl):
             self.EnsureVisible(row)
 
     def OnKeyDown(self, event):
-        """Spacebar patches the selected instruction.
+        """Spacebar patches the selected instruction; G graphs from it.
 
         This was a frame-wide accelerator, so it fired wherever the focus was - pressing
         Space after clicking a step button opened the patch dialog instead of stepping.
         """
         if event.ControlDown() and event.GetKeyCode() == ord("C"):
             self.OnCopy(event)
+            return
+
+        # G for Graph: Space is already Patch. Not a hex digit, so the list's type-to-find on
+        # the address column never wanted it.
+        if event.GetKeyCode() == ord("G") and not event.HasAnyModifiers():
+            row = self.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
+            if row != -1:
+                self.OnGraph(row, False)
             return
 
         if event.GetKeyCode() != wx.WXK_SPACE:
