@@ -34,9 +34,23 @@ The most common debugging actions are available via buttons and global hotkeys:
 | Step Over     | F8       | Step Over | Executes a single instruction. Steps over CALL instructions.                  |
 | Step Out      | F9       | Step Out  | Executes until the current function returns.                                  |
 | Continue      | F10      | Continue  | Resumes execution until a breakpoint or process termination.                  |
+| Trace         | (None)   | Trace...  | Single-steps up to N instructions, recording the path (see below).            |
 | Patch         | Spacebar | (None)    | Opens the patching dialog for the selected instruction.                       |
 | Go Back       | Esc      | (None)    | Navigates to the previously viewed memory dump.                               |
 | Stop Debugger | Ctrl+Q   | (None)    | Sends a Continue command and closes the debugger window.                      |
+
+### Trace
+
+**Trace...** single-steps the halted thread inside the monitor, which is far faster than
+repeated Step Into, and records every instruction executed. Set a step limit (up to 65536), an
+optional **Stop at** address (it defaults to the selected disassembly row), **Step over calls**
+to run each CALL without tracing into it, and **Stop on leaving the module** to stop when
+execution leaves the image or shellcode region the trace started in. It also stops on entering
+monitor code or hitting a breakpoint.
+
+When it stops, the console reports why, the step count, how many distinct instructions ran and
+the most-executed addresses (loops), and the traced instructions are tinted in the disassembly.
+The tint stays until the next trace or **Clear Trace Highlight** in the disassembly menu.
 
 ---
 

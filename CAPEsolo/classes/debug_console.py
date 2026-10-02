@@ -2,7 +2,7 @@ import bisect
 import logging
 import re
 import struct
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import suppress
 from queue import Queue
 from threading import Condition, Lock, Thread
@@ -17,6 +17,7 @@ from CAPEsolo.capelib.api_protos import AppendUserPrototype, LoadPrototypes, Par
 from CAPEsolo.capelib.call_args import PROTECT_VALUES, CallArguments, ParseRegisters
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.console_commands import HelpText, ParseCommand
+from CAPEsolo.capelib.debug_session import ParseTrace
 from CAPEsolo.capelib.symbol_names import (
     Absolute,
     IsValidName,
@@ -61,6 +62,7 @@ from .debug_controls import (
     ProtectText,
     StaticSlotAddress,
     ThreadListCtrl,
+    TraceDialog,
 )
 from .debug_pipe import CommandPipeHandler
 from .patch_assembler import Assembler
@@ -107,6 +109,16 @@ TAG_STR = "STR"
 TAG_STRW = "STRW"
 TAG_PAGE = "PAGE"
 TAG_PTRS = "PTRS"
+TAG_TRACE = "TRACE"
+# debug_session.TRACE_REASONS values as the console reports them.
+TRACE_STOP_TEXT = {
+    "stop_at": "reached the stop address",
+    "max_steps": "step limit",
+    "left_module": "left the module",
+    "entered_monitor": "entered monitor code",
+    "breakpoint": "hit a breakpoint",
+    "error": "could not step",
+}
 # Slot addresses per RD request. capemon caps a reply at MAX_READ_ENTRIES (512) entries, so
 # this stays under that and the rest of a larger set goes in further requests.
 MAX_READ_BATCH = 256
@@ -557,6 +569,7 @@ class ConsolePanel(wx.Panel):
         self.stepIntoBtn = ui.Button(self, label="Step Into (F7)")
         self.stepOverBtn = ui.Button(self, label="Step Over (F8)")
         self.stepOutBtn = ui.Button(self, label="Step Out (F9)")
+        self.traceBtn = ui.Button(self, label="Trace...")
         self.continueBtn = ui.Button(self, label="Continue (F10)", variant=ui.PRIMARY)
         self.runUntilBtn.SetMinSize(wx.Size(MAX_BTN_W, -1))
         self.runUntilBtn.Bind(wx.EVT_BUTTON, self.OnRunUntilAccel)
@@ -570,6 +583,9 @@ class ConsolePanel(wx.Panel):
             btn.SetMinSize(wx.Size(MAX_BTN_W, -1))
             btn.Bind(wx.EVT_BUTTON, lambda evt, c=cmd: self.SendCommand(c))
             debugButtons.Add(btn, 0, wx.LEFT | wx.BOTTOM, 5)
+        self.traceBtn.SetMinSize(wx.Size(MAX_BTN_W, -1))
+        self.traceBtn.Bind(wx.EVT_BUTTON, lambda evt: self.PromptTrace())
+        debugButtons.Add(self.traceBtn, 0, wx.LEFT | wx.BOTTOM, 5)
 
         inputSizer.Add(debugButtons, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 10)
 
@@ -656,6 +672,53 @@ class ConsolePanel(wx.Panel):
             return
 
         self.disassemblyConsole.OnRunUntil(row)
+
+    def PromptTrace(self):
+        """Ask for trace limits and start one. The stop address defaults to the selected row."""
+        row = self.disassemblyConsole.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
+        stopAt = ""
+        if row != -1 and row != self.disassemblyConsole.cipRow:
+            stopAt = f"0x{self.disassemblyConsole.GetItemText(row, 0).strip()}"
+
+        dlg = TraceDialog(self, stopAt)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+
+            values = dlg.GetValues()
+        finally:
+            dlg.Destroy()
+
+        if values is None:
+            return
+
+        maxSteps, stopAddr, flags = values
+        self.AppendConsole(f"Tracing up to {maxSteps} steps...")
+        self.SendCommand(CMD_TRACE, f"{maxSteps}|{stopAddr:#x}|{flags}", tag=self.NextTag(TAG_TRACE))
+
+    def HandleTrace(self, payload):
+        """A TS reply arrives in place of the next break, once the monitor stops stepping."""
+        trace = ParseTrace(payload)
+        if not trace["ok"]:
+            if payload.partition("|")[2].startswith("Failed"):
+                # Refused before it started: the thread is still halted where it was.
+                self.AppendConsole(f"Trace failed: {trace['error']}")
+            else:
+                # Not a trace reply: a timeout, or another thread broke before the trace ended.
+                self.HandleExecution(payload)
+            return
+
+        cips = trace["cips"]
+        self.disassemblyConsole.SetTraceAddrs(cips)
+        hottest = ", ".join(f"{addr:#x} x{hits}" for addr, hits in Counter(cips).most_common(5) if hits > 1)
+        self.AppendConsole(
+            f"Trace stopped ({TRACE_STOP_TEXT.get(trace['reason'], trace['reason'])}) after {trace['steps']} steps, "
+            f"{len(set(cips))} distinct instructions"
+            + (" (path truncated)" if trace["truncated"] else "")
+            + (f". Hottest: {hottest}" if hottest else "")
+        )
+        # The thread is halted where the trace ended, as after a step.
+        self.HandleExecution(f"Trace halted at {trace['halt']:#x} tid {trace['tid']}")
 
     def OnAddressEnter(self, event):
         self.memAddr = self.memAddressInput.GetValue().strip()
@@ -1090,6 +1153,7 @@ class ConsolePanel(wx.Panel):
             CMD_MOD_FLAG: self.HandleModFlag,
             CMD_NOP_INSTRUCTION: self.HandleNopInstruction,
             CMD_PATCH_BYTES: self.HandlePatchBytes,
+            CMD_TRACE: self.HandleTrace,
         }
 
         if command in CMD_CONSOLE:

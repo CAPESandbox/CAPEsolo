@@ -5,7 +5,7 @@ from typing import Any
 
 from distorm3 import Decode, Decode32Bits, Decode64Bits
 
-from CAPEsolo.capelib.cmdconsts import MAX_MEM_REQUEST  # noqa: F401 - read as self._dbg.MAX_MEM_REQUEST
+from CAPEsolo.capelib.cmdconsts import MAX_MEM_REQUEST, MAX_TRACE_STEPS  # noqa: F401 - read as self._dbg.*
 from CAPEsolo.classes.debug_pipe import CommandPipeHandler
 from CAPEsolo.lib.core.pipe import PipeDispatcher, PipeServer, disconnect_pipes
 
@@ -18,8 +18,6 @@ MAX_TIMEOUT = 3600
 MAX_MEM_READ = 0x4000
 PAGE_SIZE = 0x1000
 MAX_DUMP_SIZE = 0x1000000
-# capemon's TS command takes at most 0x10000 steps per request.
-MAX_TRACE_STEPS = 0x10000
 MAX_INSTRUCTIONS = 256
 MAX_INSTRUCTION_LEN = 15
 FAILURE_TOKENS = ("Failed", "TIMEOUT", "UNREADABLE", "NODATA")

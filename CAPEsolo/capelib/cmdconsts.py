@@ -29,6 +29,8 @@ CMD_TRACE = "TS"
 # The most one memory-dump request may ask for: capemon rejects larger ones (MAX_MD_SIZE in
 # capemon's CAPE/Solo.c; 2 KB in monitors built before it), so bigger reads are split.
 MAX_MEM_REQUEST = 0x4000
+# capemon's TS command takes at most 0x10000 steps per request (MAX_TS_STEPS).
+MAX_TRACE_STEPS = 0x10000
 
 CMD_EXECUTION = (
     CMD_STEP_INTO,

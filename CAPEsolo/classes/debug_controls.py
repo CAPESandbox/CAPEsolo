@@ -32,6 +32,7 @@ from .theme import (
     ACCENT_JUMP,
     ACCENT_ORANGE,
     BG_INPUT,
+    BG_SURFACE,
     FG_SECONDARY,
     FONT_CODE,
     apply_theme,
@@ -183,6 +184,8 @@ class DisassemblyListCtrl(wx.ListCtrl):
         # Rows are rebuilt on every break, which drops their colours, so breakpoint addresses
         # are kept here and re-applied. cipRow is the one row holding the CIP highlight.
         self.bpAddrs: set[int] = set()
+        # Instructions the last trace executed, tinted until the next trace or a clear.
+        self.traceAddrs: set[int] = set()
         self.cipRow = None
         # The one row currently carrying a call argument comment, so it can be cleared
         # when CIP moves rather than leaving a stale annotation behind.
@@ -289,8 +292,25 @@ class DisassemblyListCtrl(wx.ListCtrl):
         if inst.address in self.parent.patchHistoryByAddr:
             self.SetItemFont(row, self.fontItalic)
 
-        if inst.address in self.bpAddrs:
-            self.SetItemBackgroundColour(row, COLOR_LIGHT_RED)
+        if inst.address in self.bpAddrs or inst.address in self.traceAddrs:
+            self.SetItemBackgroundColour(row, self.RowBackground(inst.address))
+
+    def RowBackground(self, addr: int) -> wx.Colour:
+        """A row's background when it is not the CIP row: breakpoint, traced, or plain."""
+        if addr in self.bpAddrs:
+            return COLOR_LIGHT_RED
+        return BG_SURFACE if addr in self.traceAddrs else BG_INPUT
+
+    def SetTraceAddrs(self, addrs):
+        """Tint the instructions a trace executed. Rows before an incremental rebuild's first
+        change are kept, not reinserted, so every current row is repainted here."""
+        self.traceAddrs = set(addrs)
+        with self.cacheLock:
+            insts = list(self.decodeCache)
+        for row, inst in enumerate(insts[: self.GetItemCount()]):
+            if row != self.cipRow:
+                self.SetItemBackgroundColour(row, self.RowBackground(inst.address))
+        self.Refresh()
 
     def BaseComment(self, row: int) -> str:
         """The comment a row carries of its own accord: the name of the address it is at."""
@@ -329,8 +349,7 @@ class DisassemblyListCtrl(wx.ListCtrl):
             with self.cacheLock:
                 inst = self.decodeCache[self.cipRow] if self.cipRow < len(self.decodeCache) else None
 
-            bp = inst is not None and inst.address in self.bpAddrs
-            self.SetItemBackgroundColour(self.cipRow, COLOR_LIGHT_RED if bp else BG_INPUT)
+            self.SetItemBackgroundColour(self.cipRow, self.RowBackground(inst.address) if inst else BG_INPUT)
 
         self.cipRow = None
 
@@ -469,6 +488,9 @@ class DisassemblyListCtrl(wx.ListCtrl):
         menu.AppendSubMenu(bpMenu, "Set Breakpoint")
         miDataBp = menu.Append(wx.ID_ANY, "Set Data Breakpoint...")
         self.Bind(wx.EVT_MENU, lambda e, r=row: self.OnDataBreakpoint(r), miDataBp)
+        if self.traceAddrs:
+            miClearTrace = menu.Append(wx.ID_ANY, "Clear Trace Highlight")
+            self.Bind(wx.EVT_MENU, lambda e: self.SetTraceAddrs(()), miClearTrace)
 
         self.Bind(wx.EVT_MENU, self.OnCopy, miCopy)
         self.Bind(wx.EVT_MENU, lambda e, r=row: self.OnCopyAddress(r), miCopyAddress)
@@ -720,7 +742,7 @@ class DisassemblyListCtrl(wx.ListCtrl):
         if row == wx.NOT_FOUND:
             return
 
-        self.SetItemBackgroundColour(row, ACCENT_GREEN if row == self.cipRow else BG_INPUT)
+        self.SetItemBackgroundColour(row, ACCENT_GREEN if row == self.cipRow else self.RowBackground(addr))
         self.Refresh()
 
     def SetBpBackground(self, addr):
@@ -2179,6 +2201,69 @@ class BreakpointDialog(ui.Dialog):
             return None
 
         return slot, bpType, size, address
+
+
+class TraceDialog(ui.Dialog):
+    """Step limit, optional stop address and flags for a trace (capemon's TS command)."""
+
+    def __init__(self, parent, stopAt: str = ""):
+        super().__init__(parent, title="Trace", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+
+        grid = wx.FlexGridSizer(rows=0, cols=2, hgap=8, vgap=8)
+        grid.AddGrowableCol(1, 1)
+
+        grid.Add(wx.StaticText(self, label="Max steps:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        stepsField = ui.Field(self, value="1000")
+        self.stepsCtrl = stepsField.ctrl
+        grid.Add(stepsField, flag=wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Stop at:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        stopField = ui.Field(self, value=stopAt)
+        self.stopCtrl = stopField.ctrl
+        grid.Add(stopField, flag=wx.EXPAND)
+
+        self.stepOverCtrl = ui.Check(self, label="Step over calls")
+        self.moduleCtrl = ui.Check(self, label="Stop on leaving the module")
+
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
+        outer.Add(self.stepOverCtrl, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        outer.Add(self.moduleCtrl, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        outer.Add(ui.dialog_buttons(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.SetSizer(outer)
+        self.Bind(wx.EVT_BUTTON, self.OnOk, id=wx.ID_OK)
+        apply_theme(self)
+
+        # After apply_theme, as in BreakpointDialog: FONT_CODE is only real once the palette is
+        # initialised, and apply_theme would replace it with the UI font.
+        self.stopCtrl.SetFont(FONT_CODE)
+        self.stopCtrl.SetMinSize(wx.Size(self.stopCtrl.GetTextExtent("0x00007FFB12340000____")[0], -1))
+        self.Fit()
+        self.SetMinSize(self.GetSize())
+
+    def OnOk(self, event):
+        if self.GetValues() is not None:
+            self.EndModal(wx.ID_OK)
+
+    def GetValues(self):
+        """Return (max steps, stop address or 0, TS flags) or None, reporting why if invalid."""
+        text = self.stepsCtrl.GetValue().strip()
+        try:
+            steps = int(text, 0)
+        except ValueError:
+            steps = 0
+        if not 1 <= steps <= MAX_TRACE_STEPS:
+            ui.message(f"Max steps must be between 1 and {MAX_TRACE_STEPS}.", "Trace", wx.OK | wx.ICON_ERROR)
+            return None
+
+        stop = self.stopCtrl.GetValue().strip()
+        if stop and not IsValidHexAddress(stop):
+            ui.message(f"'{stop}' is not a valid address.", "Trace", wx.OK | wx.ICON_ERROR)
+            return None
+
+        # TS flags: 1 steps over CALLs, 2 stops on leaving the allocation the trace began in.
+        flags = (1 if self.stepOverCtrl.GetValue() else 0) | (2 if self.moduleCtrl.GetValue() else 0)
+        return steps, int(stop, 16) if stop else 0, flags
 
 
 class CallStackListCtrl(wx.ListCtrl):
