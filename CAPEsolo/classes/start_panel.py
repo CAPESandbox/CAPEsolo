@@ -1120,6 +1120,7 @@ class StartPanel(wx.Panel):
         def done(failed):
             mainFrame.statusBar.Finish("Analysis complete")
             mainFrame.extendTimeoutBtn.Disable()
+            self.terminateAnalyzerBtn.Disable()
             self.reportsBtn.Enable()
             warnings = outcome.get("warnings") or []
             if failed:

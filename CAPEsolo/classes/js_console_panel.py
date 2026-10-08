@@ -9,7 +9,7 @@ from CAPEsolo.capelib.js_streams import AssembleConversations, AssembleDns, Drop
 from CAPEsolo.capelib.path_utils import path_exists
 
 from . import ui_kit as ui
-from .custom_grid import CopyableGrid
+from .custom_grid import CopyableGrid, SortKey
 from .key_event import KeyEventHandlerMixin
 from .theme import FONT_CODE, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
@@ -75,6 +75,9 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
         self.grid.SetColAttr(4, infoAttr)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(False)
+        # Bound after CopyableGrid's own handler, so this runs first and replaces its
+        # page-only sort with one over every page (and keeps pageRows in step for the detail).
+        self.grid.Bind(gridlib.EVT_GRID_LABEL_LEFT_CLICK, self.OnSortColumn)
         self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self.OnSelectCell)
 
         self.resultsWindow = wx.TextCtrl(
@@ -173,6 +176,7 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
             self.results["js_log"] = jslog
             self._LiveAppendPayloads(newPaths)
             self.allRows = rows
+            self.grid.ResetSort()
             self.LoadKindFilter()
             self.pagination_sizer.ShowItems(True)
             self.current_page = 1
@@ -334,6 +338,20 @@ class JsConsolePanel(wx.Panel, KeyEventHandlerMixin):
         selected = self.categoryDropdown.GetValue()
         # Labels carry a trailing " (count)" that is not part of the kind.
         self.category = selected.rsplit(" (", 1)[0]
+        self.current_page = 1
+        self.AddTableData()
+
+    SORT_FIELDS = ("ts", "kind", "src", "dst", "info")
+
+    def OnSortColumn(self, event):
+        col = event.GetCol()
+        if not 0 <= col < len(self.SORT_FIELDS) or not self.allRows:
+            return
+        reverse = self.grid.NextSort(col)
+        field = self.SORT_FIELDS[col]
+        self.allRows = sorted(
+            self.allRows, key=lambda row: SortKey(row.get(field, "")), reverse=reverse
+        )
         self.current_page = 1
         self.AddTableData()
 

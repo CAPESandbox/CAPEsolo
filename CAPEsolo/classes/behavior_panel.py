@@ -10,7 +10,7 @@ from CAPEsolo.capelib.call_filter import CallFilter, FilterCalls, ProcessLabel
 from CAPEsolo.capelib.utils import convert_to_printable
 
 from . import ui_kit as ui
-from .custom_grid import CopyableGrid
+from .custom_grid import CopyableGrid, SortKey
 from .key_event import KeyEventHandlerMixin
 from .theme import BEHAVIOR_CATEGORY_COLORS, GRID_ROW_ALT, SP_XS, apply_theme, dip
 
@@ -191,6 +191,9 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
         self.grid.SetColAttr(5, argsAttr)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(False)
+        # Bound after CopyableGrid's own handler, so this runs first and replaces its
+        # page-only sort with one over every page.
+        self.grid.Bind(gridlib.EVT_GRID_LABEL_LEFT_CLICK, self.OnSortColumn)
 
         self.grid.Hide()
         vbox.Add(
@@ -301,6 +304,7 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
 
         def render(calls):
             self.viewCalls = calls
+            self.grid.ResetSort()
             self.current_page = 1
             if not self.grid.IsShown():
                 self.pagination_sizer.ShowItems(True)
@@ -316,6 +320,30 @@ class BehaviorPanel(wx.Panel, KeyEventHandlerMixin):
             frame.RunSteps([("behavior filter", compute, render)])
         else:
             render(compute())
+
+    # Grid column -> sort key over a (proc, call) pair; Arguments (5) is not sortable.
+    SORT_KEYS = {
+        0: lambda proc, call: ProcessLabel(proc),
+        1: lambda proc, call: call.get("timestamp", ""),
+        2: lambda proc, call: call.get("thread_id", ""),
+        3: lambda proc, call: call.get("caller", ""),
+        4: lambda proc, call: call.get("api", ""),
+        6: lambda proc, call: call.get("status", ""),
+        7: lambda proc, call: call.get("return", ""),
+        8: lambda proc, call: call.get("repeated", ""),
+    }
+
+    def OnSortColumn(self, event):
+        key = self.SORT_KEYS.get(event.GetCol())
+        if key is None or not self.viewCalls:
+            return
+        reverse = self.grid.NextSort(event.GetCol())
+        self.viewCalls = sorted(
+            self.viewCalls, key=lambda pc: SortKey(key(*pc)), reverse=reverse
+        )
+        self.current_page = 1
+        self.AddTableData()
+        self.ApplyAlternateRowShading()
 
     def OnPaneChanged(self, event):
         self.Layout()
