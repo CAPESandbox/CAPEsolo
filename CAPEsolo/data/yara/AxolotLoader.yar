@@ -17,10 +17,10 @@ rule AxolotScanner2
     meta:
         author = "enzok"
         description = "AxolotLoader Scanner"
-        cape_options = "clear,count=0,bp0=$size+7,action0=dumpsize:rdx,hc0=1,bp1=$payload*,action1=scan,hc1=1"
+        cape_options = "clear,count=0,bp0=$size+7,action0=dumpsize:rdx,hc0=1,bp1=$payload*-1,action1=scan,hc1=1"
     strings:
-        $size = {48 C7 C2 [3] 00 [0-4] 49 C7 C0 40 00 00 00 4? 8D 4C 24}
-        $payload = {(49 8D 4D 10 | 4C 89 F9) [0-16] 49 8D 87 [3] 00 [0-30] FF}
+        $size = {48 C7 C2 [2] ~00 00 [0-4] 49 C7 C0 40 00 00 00 4? 8D 4C 24}
+        $payload = {(49 8D 4D 10 | 4C 89 F9) [0-16] 49 8D 87 [3] 00 [0-30] FF (D0|E0)}
         $loadlibrary = {4C 6F 61 64 4C 69 62 72 61 72 79 41}
         $kernel32 = {6B 00 65 00 72 00 6E 00 65 00 6C 00 33 00 32 00 2E 00 64 00 6C 00 6C 00}
     condition:
