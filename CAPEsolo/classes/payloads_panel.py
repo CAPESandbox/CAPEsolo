@@ -249,6 +249,17 @@ class PayloadsPanel(wx.Panel):
         if step:
             self.GetMainFrame().RunSteps([step])
 
+    def PublishPayload(self, path, entry, cape_info, fileinfo):
+        """Record one payload in the shared results dict, report-shaped."""
+        payload = dict(cape_info)
+        for name, value in fileinfo.items():
+            if name != "path" and value:
+                payload[name] = value
+        for flag in ("incomplete", "truncated"):
+            if entry.get(flag):
+                payload[flag] = True
+        self.results.setdefault("payloads", []).append({str(path): payload})
+
     def PayloadsStep(self):
         """The payload list as a (label, compute, render) step, or None when there is nothing
         to load. Hashing every payload - the slow part - runs on the processing worker; the
