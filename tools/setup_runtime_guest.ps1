@@ -5,6 +5,9 @@
 
 .DESCRIPTION
     Installs, in order:
+      * the current winget (App Installer) from its GitHub release, unless the 'winget' source
+        already updates - the inbox client (1.2 on 22631) fails 'winget source update' with
+        "Cancelled", and setup_quiet_guest.ps1 turns off the Store updates that would replace it;
       * Python 3.13 (all-users, prepended to PATH, 64-bit) - for tooling/scripts run in the guest;
       * the latest 7-Zip - archive extraction;
       * the Visual C++ 2015-2022 redistributables, both x64 and x86 - many native samples and
@@ -16,6 +19,13 @@
     component is detected and skipped.
 
     Run once on a clean VM, verify, then snapshot the state the sandbox reverts to.
+
+.PARAMETER SkipWinget
+    Do not update winget.
+
+.PARAMETER WingetReleaseUrl
+    Where DesktopAppInstaller_Dependencies.zip and Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle
+    are downloaded from. Defaults to the latest winget-cli GitHub release.
 
 .PARAMETER SkipPython
     Do not install Python.
@@ -54,13 +64,15 @@
 #>
 [CmdletBinding()]
 param(
+    [switch] $SkipWinget,
     [switch] $SkipPython,
     [switch] $Skip7Zip,
     [switch] $SkipVCRedist,
     [string] $PythonExeUrl   = 'https://www.python.org/ftp/python/3.13.1/python-3.13.1-amd64.exe',
     [string] $SevenZipExeUrl = 'https://www.7-zip.org/a/7z2408-x64.exe',
     [string] $VCRedistX64Url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe',
-    [string] $VCRedistX86Url = 'https://aka.ms/vs/17/release/vc_redist.x86.exe'
+    [string] $VCRedistX86Url = 'https://aka.ms/vs/17/release/vc_redist.x86.exe',
+    [string] $WingetReleaseUrl = 'https://github.com/microsoft/winget-cli/releases/latest/download'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +88,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] `
 if (-not $isAdmin) {
     Write-Note 'Not elevated - relaunching as Administrator...'
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    if ($SkipWinget)     { $a += '-SkipWinget' }
     if ($SkipPython)     { $a += '-SkipPython' }
     if ($Skip7Zip)       { $a += '-Skip7Zip' }
     if ($SkipVCRedist)   { $a += '-SkipVCRedist' }
@@ -83,6 +96,7 @@ if (-not $isAdmin) {
     if ($SevenZipExeUrl) { $a += @('-SevenZipExeUrl', $SevenZipExeUrl) }
     if ($VCRedistX64Url) { $a += @('-VCRedistX64Url', $VCRedistX64Url) }
     if ($VCRedistX86Url) { $a += @('-VCRedistX86Url', $VCRedistX86Url) }
+    if ($WingetReleaseUrl) { $a += @('-WingetReleaseUrl', $WingetReleaseUrl) }
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $a
     return
 }
@@ -128,6 +142,44 @@ function Install-ViaWingetOrExe {
     Write-Step "Installing $Name (silent)"
     [void](Invoke-SilentExe -Path $exe -Arguments $SilentArgs -OkCodes $OkCodes)
     Write-Ok "$Name installed via $Url"
+}
+
+# --- winget (App Installer) ---
+# Best-effort: on failure the installs below fall back to their direct downloads.
+if (-not $SkipWinget) {
+    Write-Step 'Updating winget (App Installer)'
+    $sourceOk = $false
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget source update --name winget | Out-Null
+        $sourceOk = ($LASTEXITCODE -eq 0)
+    }
+    if ($sourceOk) {
+        Write-Ok "winget $(winget --version) already updates its source"
+    } else {
+        $wg = Join-Path $env:TEMP 'winget'
+        $pp = $ProgressPreference
+        try {
+            New-Item -ItemType Directory -Path $wg -Force | Out-Null
+            $ProgressPreference = 'SilentlyContinue'   # PS 5.1's progress bar makes the downloads crawl.
+            Invoke-WebRequest -Uri "$WingetReleaseUrl/DesktopAppInstaller_Dependencies.zip" `
+                -OutFile "$wg\deps.zip" -UseBasicParsing
+            Invoke-WebRequest -Uri "$WingetReleaseUrl/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" `
+                -OutFile "$wg\winget.msixbundle" -UseBasicParsing
+            Expand-Archive -Path "$wg\deps.zip" -DestinationPath "$wg\deps" -Force
+            foreach ($dep in Get-ChildItem "$wg\deps" -Recurse -Filter *.appx | Where-Object FullName -match 'x64') {
+                # A dependency already present at a higher version refuses to install; that is fine.
+                try { Add-AppxPackage -Path $dep.FullName } catch { Write-Note "$($dep.Name): $($_.Exception.Message)" }
+            }
+            Add-AppxPackage -Path "$wg\winget.msixbundle"
+            winget source update --name winget | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "winget $(winget --version) installed; source updates" }
+            else { Write-Note "winget $(winget --version) installed, but 'winget source update' returned $LASTEXITCODE" }
+        } catch {
+            Write-Note "winget update failed ($($_.Exception.Message)) - using the direct-download fallbacks."
+        } finally {
+            $ProgressPreference = $pp
+        }
+    }
 }
 
 # --- Python 3.13 ---
