@@ -256,7 +256,7 @@ applying runs the same table. Windows 11-only items report `[n/a]` on Windows 10
 | SmartScreen/MOTW | (always) | Explorer and Store-app SmartScreen off; downloads get no Zone.Identifier. |
 | Smart App Control | (always, Win11) | `VerifiedAndReputablePolicyState=0`. Once off it cannot be re-enabled - which is the point. |
 | VBS/HVCI/BitLocker | (always) | memory integrity and VBS off, device encryption prevented (24H2 needs it), and a check that the system drive is not already BitLocker-encrypted (reported only - decrypt with `manage-bde -off C:` yourself). |
-| Conveniences | (always) | UAC off, Fast Startup/hibernation/sleep/monitor timeout off, System Restore off, file extensions and hidden files shown, PowerShell execution policy `Bypass` (LocalMachine, 64- and 32-bit), black solid desktop background. |
+| Conveniences | (always) | the guest (AutoLogon) user in Administrators; UAC fully off: `EnableLUA=0`, admins elevate without prompting, no secure desktop, the built-in Administrator unfiltered, installer detection and virtualization off, and `LocalAccountTokenFilterPolicy=1` so remote logons by a local admin get the full token; Fast Startup/hibernation/sleep/monitor timeout off, System Restore off, file extensions and hidden files shown, PowerShell execution policy `Bypass` (LocalMachine, 64- and 32-bit), black solid desktop background. |
 | Firewall | (always) | left on, with an inbound rule for CAPEsolo-mcp on TCP 8000. |
 
 Optional, off by default (both are tradeoffs):

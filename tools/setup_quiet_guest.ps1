@@ -474,7 +474,22 @@ if ($DisableRootAutoUpdate) {
 }
 
 # --- Analysis conveniences. ---
-RegItem Convenience 'UAC off' 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA' 0
+$uac = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+RegItem Convenience 'UAC off' $uac 'EnableLUA' 0
+# The rest of UAC, so nothing prompts or filters even before the EnableLUA reboot (or if it is re-enabled).
+RegItem Convenience 'UAC: admins elevate without prompting'        $uac 'ConsentPromptBehaviorAdmin' 0
+RegItem Convenience 'UAC: no secure desktop for prompts'           $uac 'PromptOnSecureDesktop' 0
+RegItem Convenience 'UAC: built-in Administrator not filtered'     $uac 'FilterAdministratorToken' 0
+RegItem Convenience 'UAC: installer detection off'                 $uac 'EnableInstallerDetection' 0
+RegItem Convenience 'UAC: file/registry virtualization off'        $uac 'EnableVirtualization' 0
+RegItem Convenience 'UAC: remote local-admin logons get full token' $uac 'LocalAccountTokenFilterPolicy' 1
+# With UAC off, a member of Administrators runs everything with the full admin token. The guest user
+# is the AutoLogon account (or whoever runs this); matched by SID S-1-5-32-544, so localized names work.
+$GuestUser = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction SilentlyContinue).DefaultUserName
+if (-not $GuestUser) { $GuestUser = $env:USERNAME }
+CustomItem Convenience "guest user '$GuestUser' in Administrators" `
+    { [bool](Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object { $_.Name -eq "$env:COMPUTERNAME\$GuestUser" }) } `
+    { Add-LocalGroupMember -SID 'S-1-5-32-544' -Member $GuestUser }
 RegItem Convenience 'Fast Startup off' 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0
 CustomItem Convenience 'hibernation off' `
     { Test-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled' 0 } `
