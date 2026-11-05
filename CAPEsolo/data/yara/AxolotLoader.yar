@@ -41,6 +41,21 @@ rule AxolotLoader
         all of them
 }
 
+rule AxolotLoaderWordlistDll
+{
+    meta:
+        author = "enzok"
+        description = "AxolotLoader trojanized sideload DLL: dump the loader buffer once the wordlist file is decoded in place"
+        cape_options = "clear,count=0,bp0=$patch,action0=dump:rdi,hc0=1"
+        hash = "628d575a872e379d1d1c883e008c298301d12d396f3ee044a3a9720f6189c8b3"
+    strings:
+        $patch = {4C 89 7F 02 [0-140] 4C 89 6F 0C}
+        $getpc = {48 83 E4 F0 E8 00 00 00 00 [0-140] 49 81 EF ?? ?? ?? ??}
+        $pool  = {6B 00 65 00 72 00 6E 00 65 00 6C 00 33 00 32 00 2E 00 64 00 6C 00 6C 00 00 00 56 69 72 74 75 61 6C 41 6C 6C 6F 63 00 6D 00 73 00 76 00 63 00 72 00 74 00 2E 00 64 00 6C 00 6C 00 00 00 77 63 73 72 63 68 72 00 53 65 74 43 75 72 72 65 6E 74 44 69 72 65 63 74 6F 72 79 57 00}
+    condition:
+        uint16(0) == 0x5A4D and $patch and 1 of ($getpc, $pool)
+}
+
 rule AxolotLoader_SideloadSettle
 {
     meta:

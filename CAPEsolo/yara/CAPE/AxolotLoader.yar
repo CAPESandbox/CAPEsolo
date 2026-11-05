@@ -55,3 +55,15 @@ rule AxolotLoaderShellCode
     condition:
         $start and $xor_loop and 1 of ($decoded*)
 }
+
+rule AxolotLoaderXorStub
+{
+    meta:
+        author = "enzok"
+        description = "AxolotLoaderXorStub Payload"
+        cape_type = "AxolotLoader Payload"
+    strings:
+        $stub = {49 BF [8] 48 BB [8] 48 83 E4 F0 48 8D 05 [4] 48 8D 15 [4] 48 B9 [8] 48 31 08 48 83 C0 08 48 39 D0 72 F4}
+    condition:
+        $stub
+}
