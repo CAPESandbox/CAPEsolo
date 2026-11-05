@@ -1,3 +1,5 @@
+import logging
+
 import wx
 import wx.grid as gridlib
 import wx.lib.scrolledpanel as scrolled
@@ -7,9 +9,20 @@ from CAPEsolo.capelib.signatures import RunSignatures
 from CAPEsolo.capelib.utils import JsonPathExists
 
 from . import ui_kit as ui
-from .custom_grid import CopyableGrid
+from .custom_grid import CopyableGrid, SortKey
 from .key_event import KeyEventHandlerMixin
-from .theme import GRID_ROW_ALT, SP_XS, apply_theme, dip
+from .theme import (
+    ACCENT_ORANGE,
+    DANGER,
+    FG_ON_DANGER,
+    FG_PRIMARY,
+    GRID_ROW_ALT,
+    SP_XS,
+    apply_theme,
+    dip,
+)
+
+log = logging.getLogger(__name__)
 
 
 class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
@@ -41,14 +54,20 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
         grid_panelsizer = wx.BoxSizer(wx.VERTICAL)
         grid_panel.SetSizer(grid_panelsizer)
 
-        self.grid = CopyableGrid(grid_panel, 0, 1)
-        self.grid.SetColLabelValue(0, "Signatures")
+        columnLabels = ["Severity", "Name", "Description", "Confidence", "Families"]
+        self.grid = CopyableGrid(grid_panel, 0, len(columnLabels))
+        for i, label in enumerate(columnLabels):
+            self.grid.SetColLabelValue(i, label)
         self.grid.SetColLabelAlignment(wx.ALIGN_CENTRE, wx.ALIGN_CENTRE)
-        attr = gridlib.GridCellAttr()
-        attr.SetAlignment(wx.ALIGN_LEFT, wx.ALIGN_CENTRE)
-        self.grid.SetColAttr(0, attr)
+        for col in range(len(columnLabels)):
+            attr = gridlib.GridCellAttr()
+            attr.SetAlignment(wx.ALIGN_LEFT, wx.ALIGN_CENTRE)
+            self.grid.SetColAttr(col, attr)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(False)
+        # Bound after CopyableGrid's own handler, so this runs first; rebuilding from
+        # self.sigs keeps the severity colour on the right rows.
+        self.grid.Bind(gridlib.EVT_GRID_LABEL_LEFT_CLICK, self.OnSortColumn)
         grid_panelsizer.Add(self.grid, 1, wx.EXPAND)
         self.grid.Hide()
         vbox.Add(
@@ -164,8 +183,15 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
         return ("signatures", compute, render)
 
     def AddTableData(self):
+        # self.sigs holds one (severity, cells) per row, in grid order, so a header sort can
+        # rebuild the rows and the severity colour follows them (see ApplyAlternateRowShading).
+        self.sigs = []
         try:
-            for sig in self.results.get("signatures"):
+            sigs = sorted(
+                self.results.get("signatures") or [],
+                key=lambda s: (-(s.get("severity") or 0), s.get("name") or ""),
+            )
+            for sig in sigs:
                 if sig.get("description", ""):
                     sigData = sig.get("description")
                     if sig.get("data", []):
@@ -173,16 +199,40 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
                             if "type" not in item:
                                 key = next(iter(item.keys()))
                                 sigData += f"\n    \u2022 {key}: {item[key]}"
-                    self.grid.AppendRows(1)
-                    self.grid.SetCellValue(self.grid.GetNumberRows() - 1, 0, sigData)
-        except Exception as e:
-            print(e)
+                    cells = (
+                        str(sig.get("severity", "")),
+                        sig.get("name") or "",
+                        sigData,
+                        str(sig.get("confidence", "")),
+                        ", ".join(sig.get("families") or []),
+                    )
+                    self.sigs.append((sig.get("severity") or 0, cells))
+        except Exception:
+            log.exception("Failed to show the signature results")
 
+        self.FillGrid()
         self.grid.AutoSizeColumns()
-        self.grid.AutoSizeRows()
-        self.ApplyAlternateRowShading()
         self.grid.Show()
         self.Layout()
+
+    def FillGrid(self):
+        rows = self.grid.GetNumberRows()
+        if rows > 0:
+            self.grid.DeleteRows(0, rows)
+        self.grid.AppendRows(len(self.sigs))
+        for row, (_, cells) in enumerate(self.sigs):
+            for col, value in enumerate(cells):
+                self.grid.SetCellValue(row, col, value)
+        self.grid.AutoSizeRows()
+        self.ApplyAlternateRowShading()
+
+    def OnSortColumn(self, event):
+        col = event.GetCol()
+        if col < 0 or not self.sigs:
+            return
+        reverse = self.grid.NextSort(col)
+        self.sigs.sort(key=lambda sig: SortKey(sig[1][col]), reverse=reverse)
+        self.FillGrid()
 
     def ApplyAlternateRowShading(self):
         numRows = self.grid.GetNumberRows()
@@ -192,4 +242,13 @@ class SignaturesPanel(wx.Panel, KeyEventHandlerMixin):
                 attr = gridlib.GridCellAttr()
                 attr.SetBackgroundColour(GRID_ROW_ALT)
                 self.grid.SetRowAttr(row, attr)
+            # Severity cell: red fill for 3 and up, the orange row tint for 2. Re-applied here
+            # because a theme switch calls this, and a cell keeps the colour it was given.
+            severity = self.sigs[row][0] if row < len(self.sigs) else 0
+            if severity >= 3:
+                self.grid.SetCellBackgroundColour(row, 0, DANGER)
+                self.grid.SetCellTextColour(row, 0, FG_ON_DANGER)
+            elif severity == 2:
+                self.grid.SetCellBackgroundColour(row, 0, ACCENT_ORANGE)
+                self.grid.SetCellTextColour(row, 0, FG_PRIMARY)
         self.grid.ForceRefresh()

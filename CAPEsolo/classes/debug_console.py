@@ -2,7 +2,7 @@ import bisect
 import logging
 import re
 import struct
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import suppress
 from queue import Queue
 from threading import Condition, Lock, Thread
@@ -17,6 +17,14 @@ from CAPEsolo.capelib.api_protos import AppendUserPrototype, LoadPrototypes, Par
 from CAPEsolo.capelib.call_args import PROTECT_VALUES, CallArguments, ParseRegisters
 from CAPEsolo.capelib.cmdconsts import *
 from CAPEsolo.capelib.console_commands import HelpText, ParseCommand
+from CAPEsolo.capelib.debug_session import (
+    MAX_DUMP_SIZE,
+    ParseBreakTid,
+    ParseDumpRegion,
+    ParseMemorySearch,
+    ParseTrace,
+    ParseXrefs,
+)
 from CAPEsolo.capelib.symbol_names import (
     Absolute,
     IsValidName,
@@ -34,6 +42,7 @@ from CAPEsolo.capelib.page_cache import (
     DistantPages,
     FindRegion,
     HotPages,
+    IsReadable,
     PageBase,
     PageChanged,
     PageHash,
@@ -45,6 +54,7 @@ from CAPEsolo.lib.core.pipe import PipeDispatcher, PipeServer, disconnect_pipes
 
 from . import ui_kit as ui
 from .debug_controls import (
+    BreakHistoryListCtrl,
     BreakpointDialog,
     BreakpointsListCtrl,
     CallStackListCtrl,
@@ -54,6 +64,9 @@ from .debug_controls import (
     COMMENT_COL,
     MemDumpListCtrl,
     MemoryListCtrl,
+    MemoryMapDialog,
+    SearchMemoryDialog,
+    SearchResultsDialog,
     ModulesListCtrl,
     PrototypeDialog,
     RegsTextCtrl,
@@ -61,7 +74,10 @@ from .debug_controls import (
     ProtectText,
     StaticSlotAddress,
     ThreadListCtrl,
+    TraceDialog,
+    XrefsDialog,
 )
+from .cfg_view import CfgWindow
 from .debug_pipe import CommandPipeHandler
 from .patch_assembler import Assembler
 from .patch_models import PatchEntry
@@ -107,6 +123,25 @@ TAG_STR = "STR"
 TAG_STRW = "STRW"
 TAG_PAGE = "PAGE"
 TAG_PTRS = "PTRS"
+TAG_TRACE = "TRACE"
+TAG_PAYLOAD = "PAYLOAD"
+TAG_SEARCH = "SEARCH"
+TAG_XREFS = "XREFS"
+def BreakEvent(payload: str) -> str:
+    """The kind of stop a break line reports: "Breakpoint 0", "Software breakpoint", "Single step"."""
+    head = payload.split(" => ")[0] if " => " in payload else payload.split(" at ")[0]
+    return head.strip()[:40]
+
+
+# debug_session.TRACE_REASONS values as the console reports them.
+TRACE_STOP_TEXT = {
+    "stop_at": "reached the stop address",
+    "max_steps": "step limit",
+    "left_module": "left the module",
+    "entered_monitor": "entered monitor code",
+    "breakpoint": "hit a breakpoint",
+    "error": "could not step",
+}
 # Slot addresses per RD request. capemon caps a reply at MAX_READ_ENTRIES (512) entries, so
 # this stays under that and the rest of a larger set goes in further requests.
 MAX_READ_BATCH = 256
@@ -347,6 +382,12 @@ class ConsolePanel(wx.Panel):
         # A file dump in progress: capemon serves at most MAX_MEM_REQUEST bytes per request,
         # so larger dumps go out as consecutive requests and are written once all arrive.
         self.fileDump = None
+        self.memoryMapDlg = None
+        self.cfgWindow = None
+        self.searchResultsDlg = None
+        self.xrefsDlg = None
+        self.lastXrefTarget = None
+        self.lastSearchPattern = ""
         self.assembler = None
         self.firstBreak = True
         self.CMD_PAGE_MAP = None
@@ -432,6 +473,9 @@ class ConsolePanel(wx.Panel):
         btnDumpToFile = ui.Button(memPane, label="Dump Memory to File")
         btnDumpToFile.Bind(wx.EVT_BUTTON, self.OnDumpToFile)
         memInput.Add(btnDumpToFile, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
+        btnSearch = ui.Button(memPane, label="Search Memory...")
+        btnSearch.Bind(wx.EVT_BUTTON, lambda evt: self.PromptMemorySearch())
+        memInput.Add(btnSearch, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
         memSizer.Add(memInput, 0, wx.EXPAND | wx.ALL, 5)
         memPane.SetSizer(memSizer)
 
@@ -502,9 +546,21 @@ class ConsolePanel(wx.Panel):
         memoryPageSizer = wx.BoxSizer(wx.VERTICAL)
         self.memoryDisplay = MemoryListCtrl(memoryPage, console=self)
         self.memoryDisplay.SetFont(fontCourier)
+        # The panel only logs changes since the first break; the map shows everything mapped.
+        memoryMapBtn = ui.Button(memoryPage, label="Memory Map...")
+        memoryMapBtn.Bind(wx.EVT_BUTTON, lambda evt: self.ShowMemoryMap())
+        memoryPageSizer.Add(memoryMapBtn, 0, wx.ALL, 3)
         memoryPageSizer.Add(self.memoryDisplay, 1, wx.EXPAND | wx.ALL, 3)
         memoryPage.SetSizer(memoryPageSizer)
         self.modulesNotebook.AddPage(memoryPage, "Memory")
+
+        historyPage = wx.Panel(self.modulesNotebook)
+        historyPageSizer = wx.BoxSizer(wx.VERTICAL)
+        self.historyDisplay = BreakHistoryListCtrl(historyPage, console=self)
+        self.historyDisplay.SetFont(fontCourier)
+        historyPageSizer.Add(self.historyDisplay, 1, wx.EXPAND | wx.ALL, 3)
+        historyPage.SetSizer(historyPageSizer)
+        self.modulesNotebook.AddPage(historyPage, "History")
 
         self.modulesNotebook.SetMinSize(minRow)
         modulesSizer.Add(self.modulesNotebook, 1, wx.EXPAND | wx.ALL, 5)
@@ -557,6 +613,7 @@ class ConsolePanel(wx.Panel):
         self.stepIntoBtn = ui.Button(self, label="Step Into (F7)")
         self.stepOverBtn = ui.Button(self, label="Step Over (F8)")
         self.stepOutBtn = ui.Button(self, label="Step Out (F9)")
+        self.traceBtn = ui.Button(self, label="Trace...")
         self.continueBtn = ui.Button(self, label="Continue (F10)", variant=ui.PRIMARY)
         self.runUntilBtn.SetMinSize(wx.Size(MAX_BTN_W, -1))
         self.runUntilBtn.Bind(wx.EVT_BUTTON, self.OnRunUntilAccel)
@@ -570,6 +627,9 @@ class ConsolePanel(wx.Panel):
             btn.SetMinSize(wx.Size(MAX_BTN_W, -1))
             btn.Bind(wx.EVT_BUTTON, lambda evt, c=cmd: self.SendCommand(c))
             debugButtons.Add(btn, 0, wx.LEFT | wx.BOTTOM, 5)
+        self.traceBtn.SetMinSize(wx.Size(MAX_BTN_W, -1))
+        self.traceBtn.Bind(wx.EVT_BUTTON, lambda evt: self.PromptTrace())
+        debugButtons.Add(self.traceBtn, 0, wx.LEFT | wx.BOTTOM, 5)
 
         inputSizer.Add(debugButtons, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 10)
 
@@ -643,8 +703,8 @@ class ConsolePanel(wx.Panel):
         if values is None:
             return
 
-        slot, bpType, size, addr = values
-        self.SendCommand(CMD_SET_BREAKPOINT, f"{slot}|{addr:#X}|{bpType}|{size}")
+        slot, bpType, size, addr, hits = values
+        self.SendCommand(CMD_SET_BREAKPOINT, f"{slot}|{addr:#X}|{bpType}|{size}" + (f"|{hits}" if hits > 1 else ""))
 
     def OnRunUntilAccel(self, event):
         row = self.disassemblyConsole.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
@@ -656,6 +716,205 @@ class ConsolePanel(wx.Panel):
             return
 
         self.disassemblyConsole.OnRunUntil(row)
+
+    def PromptTrace(self):
+        """Ask for trace limits and start one. The stop address defaults to the selected row."""
+        row = self.disassemblyConsole.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
+        stopAt = ""
+        if row != -1 and row != self.disassemblyConsole.cipRow:
+            stopAt = f"0x{self.disassemblyConsole.GetItemText(row, 0).strip()}"
+
+        dlg = TraceDialog(self, stopAt)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+
+            values = dlg.GetValues()
+        finally:
+            dlg.Destroy()
+
+        if values is None:
+            return
+
+        maxSteps, stopAddr, flags = values
+        self.AppendConsole(f"Tracing up to {maxSteps} steps...")
+        self.SendCommand(CMD_TRACE, f"{maxSteps}|{stopAddr:#x}|{flags}", tag=self.NextTag(TAG_TRACE))
+
+    def HandleTrace(self, payload):
+        """A TS reply arrives in place of the next break, once the monitor stops stepping."""
+        trace = ParseTrace(payload)
+        if not trace["ok"]:
+            if payload.partition("|")[2].startswith("Failed"):
+                # Refused before it started: the thread is still halted where it was.
+                self.AppendConsole(f"Trace failed: {trace['error']}")
+            else:
+                # Not a trace reply: a timeout, or another thread broke before the trace ended.
+                self.HandleExecution(payload)
+            return
+
+        cips = trace["cips"]
+        self.disassemblyConsole.SetTraceAddrs(cips)
+        hottest = ", ".join(f"{addr:#x} x{hits}" for addr, hits in Counter(cips).most_common(5) if hits > 1)
+        self.AppendConsole(
+            f"Trace stopped ({TRACE_STOP_TEXT.get(trace['reason'], trace['reason'])}) after {trace['steps']} steps, "
+            f"{len(set(cips))} distinct instructions"
+            + (" (path truncated)" if trace["truncated"] else "")
+            + (f". Hottest: {hottest}" if hottest else "")
+        )
+
+        # The view follows the halt, so a trace that ends outside the module it began in (in a
+        # hooked API, say) leaves its tinted path off screen; say where to go back to. Shellcode
+        # has no module, so there the region the trace began in stands in for one.
+        def Container(addr):
+            return self.ModuleNameFor(addr) or FindRegion(self.disassemblyConsole.pageMap, addr)
+
+        if cips and Container(trace["halt"]) != (home := Container(cips[0])):
+            last = next(addr for addr in reversed(cips) if Container(addr) == home)
+            where = home if isinstance(home, str) else "the starting region"
+            self.AppendConsole(f"Last traced address in {where}: {last:#x} (Go To it to see the path)")
+
+        # The thread is halted where the trace ended, as after a step.
+        self.HandleExecution(f"Trace halted at {trace['halt']:#x} tid {trace['tid']}")
+
+    def PromptMemorySearch(self, start=None, size=None):
+        """Search memory for a pattern (capemon's MS); the matches open in a results list."""
+        dlg = SearchMemoryDialog(
+            self, f"{start:#x}" if start is not None else "", f"{size:#x}" if size is not None else ""
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+
+            values = dlg.GetValues()
+        finally:
+            dlg.Destroy()
+
+        if values is None:
+            return
+
+        pattern, start, size = values
+        self.lastSearchPattern = pattern
+        where = f"{size:#x} bytes at {start:#x}" if size else "all readable memory"
+        self.AppendConsole(f"Searching {where} for {pattern}...")
+        self.SendCommand(CMD_MEMORY_SEARCH, f"{start:#x}|{size:#x}|{pattern}", tag=self.NextTag(TAG_SEARCH))
+
+    def HandleMemorySearch(self, payload):
+        reply = ParseMemorySearch(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Search failed: {reply['error']}")
+            return
+
+        self.AppendConsole(f"Search found {reply['count']} match{'es' if reply['count'] != 1 else ''}"
+                           + (" (stopped at the limit)" if reply["truncated"] else ""))
+        if not self.searchResultsDlg:
+            self.searchResultsDlg = SearchResultsDialog(self)
+        self.searchResultsDlg.SetResults(self.lastSearchPattern, reply["addresses"], reply["truncated"])
+        self.searchResultsDlg.Show()
+        self.searchResultsDlg.Raise()
+
+    def RequestXrefs(self, target: int, scope: int | None = None):
+        """Find references to `target` in the module containing `scope` (target's own by
+        default). The monitor sweeps the code in-process; the results open in a list."""
+        self.lastXrefTarget = target
+        name = self.SymbolFor(target)
+        self.AppendConsole(f"Finding references to {name + ' ' if name else ''}{target:#x}...")
+        data = f"{target:#x}" + (f"|{scope:#x}" if scope is not None else "")
+        self.SendCommand(CMD_XREFS, data, tag=self.NextTag(TAG_XREFS))
+
+    def HandleXrefs(self, payload):
+        reply = ParseXrefs(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Xrefs failed: {reply['error']}")
+            return
+
+        self.AppendConsole(f"Found {reply['count']} reference{'s' if reply['count'] != 1 else ''}"
+                           + (" (stopped at the limit)" if reply["truncated"] else ""))
+        if not self.xrefsDlg:
+            self.xrefsDlg = XrefsDialog(self)
+        self.xrefsDlg.SetResults(self.lastXrefTarget or 0, reply["refs"], reply["truncated"])
+        self.xrefsDlg.Show()
+        self.xrefsDlg.Raise()
+
+    def ShowGraph(self, entry: int):
+        """Graph the function at `entry` in the graph window, opening it if need be."""
+        if not self.cfgWindow:
+            self.cfgWindow = CfgWindow(self)
+        self.cfgWindow.Start(entry)
+        self.cfgWindow.Show()
+        self.cfgWindow.Raise()
+
+    def RequestGraphPage(self, page: int) -> bool:
+        """Fetch a page the graph needs; False if the map says it cannot be read."""
+        region = FindRegion(self.disassemblyConsole.pageMap, page)
+        if not region or not IsReadable(region[2]) or page in self.unreadablePages:
+            return False
+        self.RequestPage(page)
+        return True
+
+    def ShowMemoryMap(self):
+        """Open the memory map, or bring the open one forward with the current map."""
+        if self.memoryMapDlg:
+            self.memoryMapDlg.Populate()
+        else:
+            self.memoryMapDlg = MemoryMapDialog(self)
+        self.memoryMapDlg.Show()
+        self.memoryMapDlg.Raise()
+
+    def AddressFromText(self, text: str) -> int | None:
+        """A typed address: hex (0x optional), else a name ResolveName knows, else None."""
+        text = (text or "").strip()
+        if IsValidHexAddress(text):
+            return int(text, 16)
+        return self.ResolveName(text) if text else None
+
+    def PromptDumpPayload(self, address="", size=None):
+        """Save a range as a CAPE payload of this analysis (capemon's DR), so it goes through
+        the YARA and config tabs like any monitor dump once the analysis is processed."""
+        if isinstance(address, int):
+            address = f"{address:#x}"
+
+        text = wx.GetTextFromUser("Start address (hex or a name):", "Dump as Payload", address or "", self)
+        if not text:
+            return
+
+        addr = self.AddressFromText(text)
+        if addr is None:
+            ui.message(f"'{text}' is not a valid address or known name.", "Dump as Payload", wx.OK | wx.ICON_ERROR)
+            return
+
+        if size is None:
+            # The rest of the region by default: the usual ask is "this allocation".
+            region = FindRegion(self.disassemblyConsole.pageMap, addr)
+            size = region[0] + region[1] - addr if region else PAGE_SIZE
+        size = min(size, MAX_DUMP_SIZE)
+
+        text = wx.GetTextFromUser("Size in bytes (hex):", "Dump as Payload", f"{size:#x}", self)
+        if not text:
+            return
+
+        try:
+            size = int(text, 16)
+        except ValueError:
+            size = 0
+        if not 1 <= size <= MAX_DUMP_SIZE:
+            ui.message(f"Size must be between 1 and {MAX_DUMP_SIZE:#x}.", "Dump as Payload", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.AppendConsole(f"Dumping {size:#x} bytes at {addr:#x} as a payload...")
+        self.SendCommand(CMD_DUMP_REGION, f"{addr:#x}|{size:#x}", tag=self.NextTag(TAG_PAYLOAD))
+
+    def HandleDumpRegion(self, payload):
+        reply = ParseDumpRegion(payload)
+        if not reply["ok"]:
+            self.AppendConsole(f"Dump as payload failed: {reply['error']}")
+            return
+
+        unreadable = reply["unreadable"]
+        self.AppendConsole(
+            f"Saved {reply['written']:#x} bytes as payload {reply['path']}"
+            + (f" ({unreadable:#x} unreadable bytes zero-filled)" if unreadable else "")
+            + "; it is listed under Payloads once the analysis is processed."
+        )
 
     def OnAddressEnter(self, event):
         self.memAddr = self.memAddressInput.GetValue().strip()
@@ -903,7 +1162,7 @@ class ConsolePanel(wx.Panel):
         del self.commandHistory[:-MAX_HISTORY]
         self.historyPos = None
 
-        code, payload, error = ParseCommand(inputText)
+        code, payload, error = ParseCommand(inputText, self.ResolveName)
         if error:
             self.AppendConsole(error)
             return
@@ -1090,6 +1349,10 @@ class ConsolePanel(wx.Panel):
             CMD_MOD_FLAG: self.HandleModFlag,
             CMD_NOP_INSTRUCTION: self.HandleNopInstruction,
             CMD_PATCH_BYTES: self.HandlePatchBytes,
+            CMD_TRACE: self.HandleTrace,
+            CMD_DUMP_REGION: self.HandleDumpRegion,
+            CMD_MEMORY_SEARCH: self.HandleMemorySearch,
+            CMD_XREFS: self.HandleXrefs,
         }
 
         if command in CMD_CONSOLE:
@@ -1287,8 +1550,11 @@ class ConsolePanel(wx.Panel):
         self.RenderDisassembly()
         self.RefreshViewState()
 
-    def ResolveCallSlots(self):
+    def ResolveCallSlots(self, instructions=None):
         """Name the indirect calls in the current view, one request per batch of slots.
+
+        `instructions` defaults to the disassembly's decode; the graph window passes its own,
+        which only need address, bytes (hex) and text.
 
         Runs by default after a decode, which the batch is what makes affordable: capemon
         sleeps 100ms between commands, so the per-slot memory dump this replaces cost ~110ms
@@ -1310,7 +1576,9 @@ class ConsolePanel(wx.Panel):
             return
 
         slots: dict[int, list[int]] = {}
-        for inst in getattr(self.disassemblyConsole, "decodeCache", []):
+        if instructions is None:
+            instructions = getattr(self.disassemblyConsole, "decodeCache", [])
+        for inst in instructions:
             if inst.address in self.resolvedExports:
                 continue
 
@@ -1400,6 +1668,8 @@ class ConsolePanel(wx.Panel):
         # Rows only: a batch can arrive several times per decode, and RefreshViewState would
         # put its six commands on the wire for each one.
         self.RenderDisassembly()
+        if self.cfgWindow:
+            self.cfgWindow.NamesChanged()
 
     def GetCip(self, data):
         m = re.search(r"0x[0-9a-fA-F]+", data)
@@ -1529,6 +1799,8 @@ class ConsolePanel(wx.Panel):
                 # Direct targets are named by the render above; the indirect ones were held
                 # back while there was nothing to name them from.
                 self.ResolveCallSlots()
+                if self.cfgWindow:
+                    self.cfgWindow.NamesChanged()
 
             return
 
@@ -1642,12 +1914,14 @@ class ConsolePanel(wx.Panel):
         for bp in payload.split("|"):
             # str.split never raises, so the old `except ValueError` here was dead and a
             # short entry reached UpdateData, where unpacking it killed the whole handler.
-            # Entries are "dr,address,type,size"; older monitors sent only the first two.
+            # Entries are "dr,address,type,size,skip"; older monitors sent four fields, or two.
             parts = [part.strip() for part in bp.split(",")]
             if len(parts) == 2:
                 parts += ["x", "1"]
+            if len(parts) == 4:
+                parts.append("0")
 
-            if len(parts) != 4:
+            if len(parts) != 5:
                 log.warning("[DEBUG CONSOLE] Skipping malformed breakpoint entry: %r", bp)
                 continue
 
@@ -1817,6 +2091,8 @@ class ConsolePanel(wx.Panel):
             return
 
         changed = self.disassemblyConsole.LoadPageMap(payload)
+        if self.memoryMapDlg and self.memoryMapDlg.IsShown():
+            self.memoryMapDlg.Populate()
         oldMap = self.disassemblyConsole.prevPageMap
         newMap = self.disassemblyConsole.pageMap
         if changed:
@@ -1921,6 +2197,9 @@ class ConsolePanel(wx.Panel):
                 pageData = pageData[:expected]
 
             self.pageBuffers[pageBase] = pageData
+
+        if self.cfgWindow:
+            self.cfgWindow.PageArrived(pageBase, pageData if validPages else None)
 
         if not self.pendingPages:
             # DoHotDecode compares against the hashes from before this read to decide whether
@@ -2259,6 +2538,8 @@ class ConsolePanel(wx.Panel):
         # RenderDisassembly only rewrites operands, so naming the address the view is parked
         # on would otherwise leave the heading showing the old name until the next move.
         self.UpdateViewLabel()
+        if self.cfgWindow:
+            self.cfgWindow.NamesChanged()
         return True
 
     def ExportNames(self, path) -> None:
@@ -2338,6 +2619,33 @@ class ConsolePanel(wx.Panel):
             self.AppendConsole(f"'{name}' names {len(matches)} addresses ({listed}); going to the first.")
 
         return matches[0]
+
+    def ResolveName(self, name: str) -> int | None:
+        """The address a typed name means: a user name, else an export.
+
+        Exports are written `module!symbol`; the module matches case-insensitively with or
+        without ".dll", the symbol as written. A bare symbol resolves only if one module
+        exports it - VirtualAlloc is in both kernel32 and kernelbase - and the candidates are
+        listed otherwise. Exports load in the background after the first break, so a module
+        not yet read resolves nothing.
+        """
+        addr = self.AddressForName(name)
+        if addr is not None:
+            return addr
+
+        modWanted, sep, symWanted = name.strip().rpartition("!")
+        modWanted = modWanted.lower().removesuffix(".dll")
+        matches = []
+        for addr, export in self.exports.items():
+            mod, _, sym = export.rpartition("!")
+            if sym == symWanted and (not sep or mod.lower().removesuffix(".dll") == modWanted):
+                matches.append((addr, export))
+
+        if len(matches) > 1:
+            self.AppendConsole(f"'{name}' is ambiguous: " + ", ".join(export for _, export in sorted(matches)))
+            return None
+
+        return matches[0][0] if matches else None
 
     def AddressOfSymbol(self, name: str) -> int | None:
         """The address `name` refers to: the reverse of SymbolFor.
@@ -2573,6 +2881,9 @@ class ConsolePanel(wx.Panel):
             # returns before reaching it and HandlePageMap would then window on a stale anchor.
             self.viewAnchor = cip
             self.AppendConsole(payload)
+            if self.cfgWindow:
+                self.cfgWindow.OnBreak()
+            self.historyDisplay.AddStop(cip, self.NearestSymbol(cip) or self.ModuleNameFor(cip), ParseBreakTid(payload), BreakEvent(payload))
             if not self.IsAddressKnown(cip):
                 self.RefreshPageMap()
                 self.RefreshModuleList()

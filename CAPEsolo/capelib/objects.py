@@ -100,7 +100,7 @@ class File:
         self._sha512 = sha512.hexdigest()
         self._sha3_384 = sha3_384.hexdigest()
         with contextlib.suppress(Exception):
-            result = tlsh.hash(bytes(tlsh_data))
+            result = tlsh.hexdigest(bytes(tlsh_data), 1)
             if result:
                 self._tlsh_hash = result
 

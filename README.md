@@ -24,8 +24,9 @@ Working on the UI
 * The same scripts run in CI on every pull request, on a Windows runner, and upload the
   renders as an artifact.
 
-* Create a Windows 10 VM that's suitable for running malware.
-  * Use the CAPEv2 guest guide for configuration details.
+* Create a Windows 10 (any) or Windows 11 23H2 VM suitable for running malware.
+  * See docs/guest_install.md for the scripted guest build (from an ISO, or patching an existing VM).
+  * Or use the CAPEv2 guest guide for manual configuration details.
   * https://capev2.readthedocs.io/en/latest/installation/guest/index.html
 * Install Python in VM, tested on 64-bit Python versions 3.11, 3.12, and 3.12. Add Python to path.
 * Download and install both Microsoft Visual C++ Redistributables:

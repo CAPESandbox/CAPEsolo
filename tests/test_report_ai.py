@@ -154,7 +154,7 @@ def test_analyze_builds_the_documented_request():
     eng = engine()
     eng.analyze("Signatures")
     request = eng._client.requests[0]
-    assert request["model"] == "claude-opus-5"
+    assert request["model"] == "claude-opus-5-5"
     assert request["thinking"] == {"type": "adaptive"}
     assert request["output_config"]["effort"] == "high"
     assert request["output_config"]["format"] == {"type": "json_schema",
@@ -221,8 +221,8 @@ def test_usage_and_spend_are_accumulated_from_the_responses():
     eng.analyze("Static")
     assert eng.usage == {"input": 2000, "output": 400, "cache_read": 1800,
                          "cache_write": 200, "calls": 2}
-    # 2000 in @ $5/M + 1800 cached @ 10% + 400 out @ $25/M
-    assert eng.spend() == pytest.approx(2000 / 1e6 * 5 + 1800 / 1e6 * 0.5 + 400 / 1e6 * 25)
+    # Opus 5.5: 2000 in @ $4/M + 1800 cached @ $0.20/M + 400 out @ $20/M
+    assert eng.spend() == pytest.approx(2000 / 1e6 * 4 + 1800 / 1e6 * 0.2 + 400 / 1e6 * 20)
 
 
 # --- orchestration ------------------------------------------------------------------------

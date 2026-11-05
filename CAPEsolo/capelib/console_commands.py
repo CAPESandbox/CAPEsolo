@@ -62,7 +62,7 @@ COMMANDS = (
     Command(CMD_STEP_OUT, ("ou", "stepout", "finish"), "ou", "Run to the return of this function"),
     Command(CMD_CONTINUE, ("ct", "continue", "go", "g"), "ct", "Continue execution"),
     Command(CMD_RUN_UNTIL, ("ru", "rununtil", "until"), "ru <address>", "Run until an address"),
-    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3|sw]", "Set a breakpoint (bp <address> sw: software)"),
+    Command(CMD_SET_BREAKPOINT, ("bp", "break"), "bp <address> [x|w|rw] [1|2|4|8] [next|0-3|sw] [hits=N]", "Set a breakpoint (bp <address> sw: software)"),
     Command(CMD_DELETE_BREAKPOINT, ("db", "bd", "delete"), "db <0-3> | db sw <address>", "Delete a breakpoint by register or address"),
     Command(CMD_BREAKPOINT_LIST, ("lb", "bl", "breakpoints"), "lb", "List breakpoints"),
     Command(CMD_MEM_DUMP, ("md", "dump", "d"), "md <address> [size]", "Dump memory"),
@@ -88,6 +88,45 @@ def _Hex(token: str) -> int | None:
     return int(token, 16)
 
 
+def _Address(token: str, resolve) -> int | None:
+    """A hex address, or, given a resolver, a name it knows (kernel32!VirtualAlloc, a rename).
+
+    Hex is tried first, so a name that also reads as hex (add, dead) means the number.
+    """
+    addr = _Hex(token)
+    if addr is None and resolve is not None:
+        addr = resolve(token)
+    return addr
+
+
+def SearchPatternHex(text: str, kind: str) -> str | None:
+    """A search pattern as capemon's MS takes it: hex byte pairs, "??" for any byte.
+
+    kind is "hex" (spaces allowed, ? or ?? wildcards), "ascii" or "utf16" (UTF-16LE, as
+    Windows stores wide strings). None if the text is empty or not valid hex.
+    """
+    if not text:
+        return None
+    if kind == "ascii":
+        return text.encode("latin-1", errors="replace").hex().upper()
+    if kind == "utf16":
+        return text.encode("utf-16-le").hex().upper()
+
+    tokens = text.replace(",", " ").split()
+    if len(tokens) == 1 and len(tokens[0]) > 2:
+        tokens = [tokens[0][i:i + 2] for i in range(0, len(tokens[0]), 2)]
+    out = []
+    for token in tokens:
+        token = token.upper()
+        if token in ("?", "??"):
+            out.append("??")
+        elif len(token) == 2 and all(c in "0123456789ABCDEF" for c in token):
+            out.append(token)
+        else:
+            return None
+    return "".join(out)
+
+
 def HelpText() -> str:
     """The command list, for `help`."""
     lines = ["Commands (aliases in brackets):"]
@@ -96,13 +135,15 @@ def HelpText() -> str:
         lines.append(f"  {command.usage:42} {command.summary}" + (f"  [{aliases}]" if aliases else ""))
 
     lines.append("  " + f"{'help | clear | disconnect | quit':42} Console actions")
-    lines.append("Addresses may be written with or without 0x. Up and Down recall history.")
+    lines.append("Addresses may be written with or without 0x, or as a name (kernel32!VirtualAlloc).")
+    lines.append("Up and Down recall history.")
     return "\n".join(lines)
 
 
-def ParseCommand(text: str):
+def ParseCommand(text: str, resolve=None):
     """(code, payload, error) for one line of input.
 
+    `resolve`, if given, maps a name to an address or None, letting address arguments be names.
     Exactly one of `code` and `error` is set; `code` is None for a local action, whose name is
     returned as the payload. An empty line is all-None, which is not an error.
     """
@@ -119,14 +160,14 @@ def ParseCommand(text: str):
     if command is None:
         return None, None, f"Unknown command '{tokens[0]}'. Type help for the list."
 
-    payload, error = _Payload(command, args)
+    payload, error = _Payload(command, args, resolve)
     if error:
         return None, None, f"{error}\nUsage: {command.usage}"
 
     return command.code, payload, None
 
 
-def _Payload(command: Command, args: list[str]):
+def _Payload(command: Command, args: list[str], resolve=None):
     """(payload, error) for a command's arguments, in the form capemon parses."""
     code = command.code
     if code in (CMD_STEP_INTO, CMD_STEP_OVER, CMD_STEP_OUT, CMD_CONTINUE, CMD_REG_UPDATE,
@@ -140,9 +181,9 @@ def _Payload(command: Command, args: list[str]):
         if len(args) != 1:
             return None, "Expected one address."
 
-        addr = _Hex(args[0])
+        addr = _Address(args[0], resolve)
         if addr is None:
-            return None, f"'{args[0]}' is not a hex address."
+            return None, f"'{args[0]}' is not a hex address or known name."
 
         return f"{addr:#x}", None
 
@@ -150,9 +191,9 @@ def _Payload(command: Command, args: list[str]):
         if not args or len(args) > 2:
             return None, "Expected an address and an optional size."
 
-        addr = _Hex(args[0])
+        addr = _Address(args[0], resolve)
         if addr is None:
-            return None, f"'{args[0]}' is not a hex address."
+            return None, f"'{args[0]}' is not a hex address or known name."
 
         if len(args) == 1:
             return f"{addr:#x}", None
@@ -164,13 +205,13 @@ def _Payload(command: Command, args: list[str]):
         return f"{addr:#x}|{size:#x}", None
 
     if code == CMD_SET_BREAKPOINT:
-        return _BreakpointPayload(args)
+        return _BreakpointPayload(args, resolve)
 
     if code == CMD_DELETE_BREAKPOINT:
         if len(args) == 2 and args[0].lower() == "sw":
-            addr = _Hex(args[1])
+            addr = _Address(args[1], resolve)
             if addr is None:
-                return None, f"'{args[1]}' is not a hex address."
+                return None, f"'{args[1]}' is not a hex address or known name."
 
             return f"sw|{addr:#X}", None
 
@@ -216,9 +257,9 @@ def _Payload(command: Command, args: list[str]):
         if len(args) != 2:
             return None, "Expected an address and hex bytes."
 
-        addr = _Hex(args[0])
+        addr = _Address(args[0], resolve)
         if addr is None:
-            return None, f"'{args[0]}' is not a hex address."
+            return None, f"'{args[0]}' is not a hex address or known name."
 
         data = args[1][2:] if args[1].lower().startswith("0x") else args[1]
         if not HEX_BYTES_RX.match(data):
@@ -229,14 +270,29 @@ def _Payload(command: Command, args: list[str]):
     return "", None
 
 
-def _BreakpointPayload(args: list[str]):
-    """`bp <address> [type] [size] [slot]` as capemon's slot|address|type|size."""
+def _BreakpointPayload(args: list[str], resolve=None):
+    """`bp <address> [type] [size] [slot] [hits=N]` as capemon's slot|address|type|size[|hits].
+
+    hits=N breaks on the Nth hit instead of the first; it may appear anywhere after the address.
+    """
+    hits = 1
+    rest = []
+    for arg in args:
+        if arg.lower().startswith("hits="):
+            value = arg[5:]
+            if not value.isdigit() or int(value) < 1:
+                return None, f"'{arg}' is not a hit count; use hits=N with N of 1 or more."
+            hits = int(value)
+        else:
+            rest.append(arg)
+    args = rest
+
     if not args or len(args) > 4:
         return None, "Expected an address, and optionally a type, size and slot."
 
-    addr = _Hex(args[0])
+    addr = _Address(args[0], resolve)
     if addr is None:
-        return None, f"'{args[0]}' is not a hex address."
+        return None, f"'{args[0]}' is not a hex address or known name."
 
     # `bp <address> sw` shorthand: a software breakpoint has no type or size to give.
     if len(args) == 2 and args[1].lower() == "sw":
@@ -270,4 +326,4 @@ def _BreakpointPayload(args: list[str]):
 
     # Uppercase 0X, matching what PromptBreakpoint already sends: capemon parses both, and
     # one wire format for breakpoints is one thing to check when a payload looks wrong.
-    return f"{slot}|{addr:#X}|{bpType}|{size}", None
+    return f"{slot}|{addr:#X}|{bpType}|{size}" + (f"|{hits}" if hits > 1 else ""), None

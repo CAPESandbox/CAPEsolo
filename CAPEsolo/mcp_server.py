@@ -29,10 +29,12 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_DELETE_BREAKPOINT,
     CMD_DUMP_REGION,
     CMD_MEM_DUMP,
+    CMD_MEMORY_SEARCH,
     CMD_MOD_FLAG,
     CMD_MODULE_LIST,
     CMD_NOP_INSTRUCTION,
     CMD_PAGE_LOAD,
+    CMD_READ_POINTERS,
     CMD_PATCH_BYTES,
     CMD_REG_UPDATE,
     CMD_RUN_UNTIL,
@@ -44,8 +46,11 @@ from CAPEsolo.capelib.cmdconsts import (
     CMD_STEP_OVER,
     CMD_THREADS,
     CMD_TRACE,
+    CMD_XREFS,
 )
 from CAPEsolo.capelib.config_paths import config_paths
+from CAPEsolo.capelib.cfg import MAX_BLOCKS, BuildCfg, CallOperand, LayoutCfg, StaticSlotAddress
+from CAPEsolo.capelib.console_commands import SearchPatternHex
 from CAPEsolo.capelib.resultserver import ResultServer
 from CAPEsolo.capelib.utils import sanitize_filename
 from CAPEsolo.capelib.utils import LoadFilesJson
@@ -1489,6 +1494,176 @@ class AnalysisJobManager:
             return {"ok": False, "error": f"Invalid address: {address}"}
         return self.debugger_execute(CMD_RUN_UNTIL, f"{addr:#X}", timeout_seconds=timeout_seconds)
 
+    def _read_pointers(self, session: Any, addresses: list[int]) -> dict[int, int]:
+        """Pointer-sized reads in batches of 256 (RD); unreadable addresses are absent."""
+        values = {}
+        for start in range(0, len(addresses), 256):
+            batch = ",".join(f"{a:#x}" for a in addresses[start:start + 256])
+            payload, error = self._command(session, CMD_READ_POINTERS, f"{MCP_DUMP_TAG}|{batch}")
+            if error:
+                continue
+            for entry in payload.split("|")[1:]:
+                try:
+                    slot, value = (int(part, 16) for part in entry.split(",", 1))
+                except ValueError:
+                    continue
+                values[slot] = value
+        return values
+
+    def debugger_cfg(self, address: Any = "", max_blocks: Any = 100, include_instructions: bool = True) -> dict[str, Any]:
+        """The control-flow graph of the function at address (default: CIP)."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        maxBlocks, error = self._validate_count(max_blocks, MAX_BLOCKS, "max_blocks")
+        if error:
+            return error
+        if address in (None, ""):
+            if session.cip is None:
+                return {"ok": False, "error": "No current instruction pointer is known; provide an address."}
+            entry = session.cip
+        else:
+            entry = self._dbg.ParseAddress(address)
+            if entry is None:
+                return {"ok": False, "error": f"Invalid address: {address}"}
+        if not session.bits:
+            registers = self._collect_registers(session)
+            if not registers.get("ok"):
+                return registers
+
+        pages: dict[int, bytes | None] = {}
+
+        def ReadBytes(addr, count):
+            out = b""
+            while len(out) < count:
+                cursor = addr + len(out)
+                base = cursor - cursor % self._dbg.PAGE_SIZE
+                if base not in pages:
+                    pages[base] = self._load_page(session, base)
+                data = pages[base]
+                offset = cursor - base
+                if not data or offset >= len(data):
+                    break
+                out += data[offset:offset + count - len(out)]
+            return out
+
+        graph = BuildCfg(entry, ReadBytes, session.bits, maxBlocks)
+        # LayoutCfg is what tells a loop's closing edge from forward flow; sizes do not matter.
+        loops = {(src, dst) for src, dst, _kind, back in LayoutCfg(graph, lambda addr: (1, 1)).edges if back}
+
+        modules = []
+        for mod in self.debugger_list_modules().get("modules") or []:
+            try:
+                modules.append((int(mod["base"], 16), int(mod["size"], 16), mod["name"]))
+            except (KeyError, ValueError):
+                continue
+
+        def Where(addr):
+            for base, size, name in modules:
+                if base <= addr < base + size:
+                    return f"{name}+{addr - base:#x}"
+            return ""
+
+        # Indirect calls through a fixed slot (the import table) are resolved the way the
+        # disassembly view resolves them: one batched read of every slot.
+        slots = {}
+        for block in graph.blocks.values():
+            for ins in block.instructions:
+                operand = CallOperand(ins.text)
+                if operand and operand.startswith("["):
+                    slot = StaticSlotAddress(operand, ins.address + ins.size)
+                    if slot is not None:
+                        slots[ins.address] = slot
+        values = self._read_pointers(session, sorted(set(slots.values())))
+
+        blocks = []
+        for start, block in graph.blocks.items():
+            last = block.instructions[-1]
+            calls = []
+            for ins in block.instructions:
+                operand = CallOperand(ins.text)
+                if operand is None:
+                    continue
+                call = {"site": f"{ins.address:#x}"}
+                if operand.startswith("0x"):
+                    target = int(operand, 16)
+                else:
+                    slot = slots.get(ins.address)
+                    target = values.get(slot) if slot is not None else None
+                    call["operand"] = operand
+                    if slot is not None:
+                        call["slot"] = f"{slot:#x}"
+                if target is not None:
+                    call.update(target=f"{target:#x}", where=Where(target))
+                calls.append(call)
+            entry_ = {
+                "start": f"{start:#x}",
+                "end": f"{last.address + last.size:#x}",
+                "instruction_count": len(block.instructions),
+                "successors": [
+                    {"address": f"{target:#x}", "kind": kind, "loop": (start, target) in loops}
+                    | ({"where": Where(target)} if target not in graph.blocks else {})
+                    for target, kind in block.edges
+                ],
+                "ends": block.end,
+                "calls": calls,
+            }
+            if include_instructions:
+                entry_["instructions"] = [
+                    {"address": f"{ins.address:#x}", "bytes": ins.bytes, "text": ins.text} for ins in block.instructions
+                ]
+            blocks.append(entry_)
+
+        unreadable = sorted(graph.missing)
+        return {
+            "ok": True,
+            "entry": f"{entry:#x}",
+            "where": Where(entry),
+            "bits": session.bits,
+            "block_count": len(blocks),
+            "edge_count": sum(len(b["successors"]) for b in blocks),
+            "loops": [{"from": f"{s:#x}", "to": f"{d:#x}"} for s, d in sorted(loops)],
+            "truncated": graph.truncated,
+            "unreadable": [f"{a:#x}" for a in unreadable[:50]],
+            "blocks": blocks,
+        }
+
+    def debugger_xrefs(self, address: Any, scope: Any = "") -> dict[str, Any]:
+        """References to address within the module containing scope (address's own by default)."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        target = self._dbg.ParseAddress(address)
+        if target is None:
+            return {"ok": False, "error": f"Invalid address: {address}"}
+        data = f"{MCP_DUMP_TAG}|{target:#x}"
+        if scope not in (None, ""):
+            scopeAddr = self._dbg.ParseAddress(scope)
+            if scopeAddr is None:
+                return {"ok": False, "error": f"Invalid scope address: {scope}"}
+            data += f"|{scopeAddr:#x}"
+
+        payload = session.SendCommand(CMD_XREFS, data, self._dbg.DEFAULT_BREAK_TIMEOUT)
+        if payload is None:
+            return {"ok": False, "error": f"Debugger command {CMD_XREFS} timed out."}
+        reply = self._dbg.ParseXrefs(payload)
+        if not reply["ok"]:
+            return {"ok": False, "error": reply["error"]}
+
+        modules = self.debugger_list_modules().get("modules") or []
+        return {
+            "ok": True,
+            "target": f"{target:#x}",
+            "count": reply["count"],
+            "truncated": reply["truncated"],
+            "refs": [
+                {"address": f"{ref['address']:#x}", "kind": ref["kind"], "module": self._dbg.ModuleOf(modules, ref["address"])}
+                for ref in reply["refs"]
+            ],
+        }
+
     def _load_page(self, session: Any, pageBase: int) -> bytes | None:
         """One page of the target's memory, or None where it cannot be read."""
         payload, error = self._command(session, CMD_PAGE_LOAD, f"{MCP_DUMP_TAG}|{pageBase:#x}")
@@ -1643,7 +1818,9 @@ class AnalysisJobManager:
         result.update(self._dbg.SummariseTrace(steps, last))
         return result
 
-    def debugger_set_breakpoint(self, address: Any, slot: str = "next", type: str = "x", size: Any = 1) -> dict[str, Any]:
+    def debugger_set_breakpoint(
+        self, address: Any, slot: str = "next", type: str = "x", size: Any = 1, hits: Any = 1
+    ) -> dict[str, Any]:
         addr = self._dbg.ParseAddress(address)
         if addr is None:
             return {"ok": False, "error": f"Invalid address: {address}"}
@@ -1669,7 +1846,55 @@ class AnalysisJobManager:
             # x86 watches the wrong bytes for a misaligned data breakpoint rather than failing.
             return {"ok": False, "error": f"A {width}-byte watch needs a {width}-byte aligned address; {addr:#x} is not."}
 
-        return self._simple_command(CMD_SET_BREAKPOINT, f"{slot.strip().lower()}|{addr:#X}|{bpType}|{width}")
+        try:
+            hits = int(hits)
+        except (TypeError, ValueError):
+            hits = 0
+        if hits < 1:
+            return {"ok": False, "error": "hits must be a whole number of 1 or more."}
+
+        data = f"{slot.strip().lower()}|{addr:#X}|{bpType}|{width}" + (f"|{hits}" if hits > 1 else "")
+        return self._simple_command(CMD_SET_BREAKPOINT, data)
+
+    def debugger_search_memory(self, pattern: str, kind: str = "hex", start: Any = "", size: Any = 0) -> dict[str, Any]:
+        """Search the target's memory for a pattern; all readable memory unless start and size are given."""
+        session, error = self._require_debugger()
+        if error:
+            return error
+
+        kind = (kind or "").strip().lower()
+        if kind not in ("hex", "ascii", "utf16"):
+            return {"ok": False, "error": "kind must be hex, ascii or utf16."}
+        hexPattern = SearchPatternHex((pattern or "").strip(), kind)
+        if not hexPattern or len(hexPattern) // 2 > 256:
+            return {"ok": False, "error": "pattern must be 1 to 256 bytes; in hex, whole bytes or ?? only."}
+
+        startAddr, length = 0, 0
+        if start not in (None, ""):
+            startAddr = self._dbg.ParseAddress(start)
+            if startAddr is None:
+                return {"ok": False, "error": f"Invalid start address: {start}"}
+            length, error = self._validate_count(size, 1 << 48, "size")
+            if error:
+                return error
+
+        payload = session.SendCommand(
+            CMD_MEMORY_SEARCH, f"{MCP_DUMP_TAG}|{startAddr:#x}|{length:#x}|{hexPattern}", self._dbg.DEFAULT_BREAK_TIMEOUT
+        )
+        if payload is None:
+            return {"ok": False, "error": f"Debugger command {CMD_MEMORY_SEARCH} timed out."}
+        reply = self._dbg.ParseMemorySearch(payload)
+        if not reply["ok"]:
+            return {"ok": False, "error": reply["error"]}
+
+        modules = self.debugger_list_modules().get("modules") or []
+        return {
+            "ok": True,
+            "pattern": hexPattern,
+            "count": reply["count"],
+            "truncated": reply["truncated"],
+            "matches": [{"address": f"{a:#x}", "module": self._dbg.ModuleOf(modules, a)} for a in reply["addresses"]],
+        }
 
     def debugger_delete_breakpoint(self, index: Any = None, address: Any = None) -> dict[str, Any]:
         if address not in (None, ""):
@@ -2078,6 +2303,57 @@ if mcp:
 
 
     @mcp.tool()
+    def capesolo_dbg_cfg(address: str = "", max_blocks: int = 100, include_instructions: bool = True) -> dict[str, Any]:
+        """The control-flow graph of the function starting at address (default: the current
+        instruction pointer) - basic blocks and the edges between them, for reasoning about a
+        function's structure rather than its linear disassembly.
+
+        There are no symbols, so address is taken as the function entry: pass a call target or
+        a known entry, not the middle of a function. Conditional and direct jumps are followed;
+        calls fall through. Each block lists its successors (kind taken / fall for the two sides
+        of a conditional jump, jump for an unconditional one, next for plain flow into a block
+        something else also jumps to, case for each distinct target of a switch table - followed
+        when a bounds check gives its size; loop marks the edge that closes a loop), why it ends
+        when it has no successor (ret, indirect - a jump through a register or an unbounded
+        table - stop, missing, limit), and its calls: direct targets, and indirect ones through a fixed slot
+        such as the import table resolved by reading the slot. Addresses outside the graph carry
+        where (module+offset). loops lists every loop's closing edge; unreadable lists addresses
+        the graph could not read. At most max_blocks blocks (500 max), nearest the entry first;
+        include_instructions=false returns the structure without instruction text.
+        """
+        return manager.debugger_cfg(address, max_blocks, include_instructions)
+
+
+    @mcp.tool()
+    def capesolo_dbg_xrefs(address: str, scope: str = "") -> dict[str, Any]:
+        """Cross-references: every instruction that calls, jumps to, or reads/writes/loads
+        address - a function, a global, an import slot.
+
+        The monitor decodes the executable code of one module in-process in one command: the
+        module containing scope, or address's own when scope is omitted. To find a sample's
+        calls to an API in another module, pass the API (or its import slot) as address and any
+        address inside the sample as scope. kind is call, jmp or jcc for control flow (a call
+        through the import slot counts as call), data for a memory operand, imm for the address
+        as an immediate (push / mov reg, offset). At most 1000; truncated says the cap was hit.
+        A linear sweep, so code reached only through obfuscation may be missed.
+        """
+        return manager.debugger_xrefs(address, scope)
+
+
+    @mcp.tool()
+    def capesolo_dbg_search_memory(pattern: str, kind: str = "hex", start: str = "", size: int = 0) -> dict[str, Any]:
+        """Search the halted target's memory for a byte pattern, in-process in one command.
+
+        kind "hex" takes byte pairs with "??" for any byte (spaces allowed); "ascii" and "utf16"
+        (UTF-16LE, as Windows stores wide strings) take text. With no start, every committed
+        readable region is searched (the monitor's own image is skipped); otherwise size bytes
+        from start. At most 1000 matches; truncated says the cap was hit. Matches carry their
+        module, empty outside any module.
+        """
+        return manager.debugger_search_memory(pattern, kind, start, size)
+
+
+    @mcp.tool()
     def capesolo_dbg_trace(
         max_steps: int = 1000, stop_at: str = "", step_over_calls: bool = False,
         stop_on_module_change: bool = False, last: int = 32, timeout_seconds: float = 120,
@@ -2100,7 +2376,7 @@ if mcp:
 
 
     @mcp.tool()
-    def capesolo_dbg_set_breakpoint(address: str, slot: str = "next", type: str = "x", size: int = 1) -> dict[str, Any]:
+    def capesolo_dbg_set_breakpoint(address: str, slot: str = "next", type: str = "x", size: int = 1, hits: int = 1) -> dict[str, Any]:
         """Set a breakpoint at address. slot is next or a debug register 0-3 for a hardware
         breakpoint, or "sw" for a software (int3) breakpoint.
 
@@ -2111,8 +2387,11 @@ if mcp:
         A software breakpoint is execute only but unlimited in number and stops every thread,
         where a hardware one is per thread. It is refused in system DLLs and monitor code (use a
         hardware breakpoint for APIs), and is visible to code that checksums itself.
+
+        hits breaks on that hit instead of the first: the first hits-1 are passed over, then it
+        breaks every time. list_breakpoints reports the hits still to pass over as skip.
         """
-        return manager.debugger_set_breakpoint(address, slot, type, size)
+        return manager.debugger_set_breakpoint(address, slot, type, size, hits)
 
 
     @mcp.tool()
